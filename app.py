@@ -12,7 +12,7 @@ import os
 import concurrent.futures
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Executive Market Radar 12.5", layout="wide", page_icon="🦅")
+st.set_page_config(page_title="Executive Market Radar 13.0", layout="wide", page_icon="🦅")
 WATCHLIST_FILE = "watchlist_data.json"
 TRADING_FILE = "trading_engine.json"
 TRANSACTION_FILE = "transactions.json"
@@ -20,16 +20,24 @@ TRANSACTION_FILE = "transactions.json"
 # --- PRO CSS STYLING ---
 st.markdown("""
 <style>
+    /* Global Styles */
     .stApp { background-color: #0E1117; }
+    
+    /* Card Design */
     .metric-container { background-color: #1E1E1E; border: 1px solid #333; border-radius: 10px; padding: 12px; margin-bottom: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
     .metric-value { font-size: 24px; font-weight: bold; margin: 2px 0; }
+    
+    /* Analysis Cards */
     .method-card { background-color: #262730; padding: 20px; border-radius: 10px; border-left: 5px solid #64B5F6; margin-bottom: 20px; }
     .score-good { color: #4CAF50; font-weight: bold; }
     .score-bad { color: #FF5252; font-weight: bold; }
     .score-neutral { color: #FFC107; font-weight: bold; }
+    
+    /* Headers */
     .section-header { font-size: 20px; font-weight: 700; margin-top: 20px; margin-bottom: 15px; color: #64B5F6; border-bottom: 1px solid #444; padding-bottom: 5px; }
     .news-card { border-left: 3px solid #4CAF50; background-color: #262730; padding: 10px; margin-bottom: 8px; border-radius: 4px; }
     .news-title { font-size: 14px; font-weight: 600; color: #E0E0E0; text-decoration: none; }
+    .fin-table { font-size: 12px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -96,12 +104,8 @@ def fetch_feed_parallel(url_list):
 def get_company_info(ticker):
     try:
         stock = yf.Ticker(ticker)
-        # Fetching all statements safely
-        return (stock.info, 
-                stock.history(period="1y"), 
-                stock.financials, 
-                stock.balance_sheet, 
-                stock.cashflow)
+        # Fetch financials separately to ensure we get the data
+        return stock.info, stock.history(period="1y"), stock.financials, stock.balance_sheet, stock.cashflow
     except: return None, None, None, None, None
 
 # --- RENDERERS ---
@@ -155,16 +159,18 @@ def execute_trade(market, action, ticker, qty, price):
     save_json(TRANSACTION_FILE, st.session_state.transactions); save_json(TRADING_FILE, st.session_state.trading); st.rerun()
 
 # --- MAIN APP ---
-st.title("🦅 Executive Market Radar 12.5")
-st.caption("Financials in Crores | Stable Engine | 6 Strategy Frameworks")
+st.title("🦅 Executive Market Radar 13.0")
+st.caption("Strategic News | Deep Financials (Cr) | Master Strategy")
 
 tab_india, tab_global, tab_ceo, tab_trade, tab_deep = st.tabs(["🇮🇳 India", "🌎 Global", "🏛️ CEO Radar", "📈 Trading Floor", "🧠 Analyst Lab"])
 
-# --- TAB 1, 2, 3, 4 (Stable Core) ---
+# --- TAB 1 & 2 (Standard) ---
 with tab_india:
     st.markdown("<div class='section-header'>📊 Benchmarks</div>", unsafe_allow_html=True)
     render_pro_metrics(get_ticker_data_parallel(["^NSEI", "^BSESN", "^NSEBANK", "USDINR=X"]))
-    if st.session_state.watchlist["india"]: render_pro_metrics(get_ticker_data_parallel(st.session_state.watchlist["india"]))
+    if st.session_state.watchlist["india"]:
+        st.markdown("<div class='sub-header'>⭐ Watchlist</div>", unsafe_allow_html=True)
+        render_pro_metrics(get_ticker_data_parallel(st.session_state.watchlist["india"]))
     st.divider()
     c1, c2, c3 = st.columns(3)
     with c1: st.markdown("**Startups**"); render_news(fetch_feed_parallel([get_google_rss("Indian Startup Funding")]))
@@ -178,9 +184,12 @@ with tab_global:
     st.divider()
     render_news(fetch_feed_parallel(["https://www.cnbc.com/id/100003114/device/rss/rss.html"]))
 
+# --- TAB 3: CEO RADAR (RESTORED & UPGRADED) ---
 with tab_ceo:
     st.markdown("<div class='section-header'>🏛️ Strategic Overview</div>", unsafe_allow_html=True)
-    c1, c2 = st.columns(2)
+    
+    # 1. MACRO METRICS (Upgraded with Oil/Inflation)
+    c1, c2, c3 = st.columns(3)
     with c1:
         st.subheader("⚠️ Yield Curve")
         data = get_ticker_data_parallel(["^TNX"])
@@ -190,7 +199,14 @@ with tab_ceo:
         rd = get_ticker_data_parallel(["HG=F", "GC=F"])
         pm = {d['symbol']: d['price'] for d in rd}
         if "HG=F" in pm and "GC=F" in pm: st.metric("Copper/Gold", f"{(pm['HG=F']/pm['GC=F'])*1000:.2f}", delta="> 2.0 = Expansion")
+    with c3:
+        st.subheader("🛢️ Inflation Proxy")
+        oil = get_ticker_data_parallel(["CL=F"])
+        if oil: st.metric("Crude Oil", f"${oil[0]['price']:.2f}", delta="Input Cost Risk", delta_color="inverse")
+
     st.divider()
+    
+    # 2. SECTOR HEATMAPS
     hm1, hm2 = st.columns(2)
     with hm1:
         st.subheader("🔥 Indian Sectors")
@@ -211,6 +227,21 @@ with tab_ceo:
             fig2.update_layout(height=250, margin=dict(t=0, b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
             st.plotly_chart(fig2, use_container_width=True)
 
+    st.divider()
+    
+    # 3. THE EXECUTIVE BRIEFING (RESTORED NEWS)
+    st.markdown("<div class='section-header'>📰 The Executive Briefing</div>", unsafe_allow_html=True)
+    st.info("Top-tier intelligence on Inflation, Policy, and Geopolitics.")
+    
+    # Advanced Query for "High Level" news
+    ceo_urls = [
+        get_google_rss("Global Economy Outlook Inflation"),
+        get_google_rss("Central Bank Policy Rate"),
+        "https://www.cnbc.com/id/100003114/device/rss/rss.html" # Top News
+    ]
+    render_news(fetch_feed_parallel(ceo_urls))
+
+# --- TAB 4: TRADING FLOOR ---
 with tab_trade:
     st.markdown("<div class='section-header'>📈 Virtual Exchange</div>", unsafe_allow_html=True)
     sub_port, sub_log = st.tabs(["💼 Portfolio", "📜 History"])
@@ -246,7 +277,7 @@ with tab_trade:
             else: st.info("Empty Portfolio")
     with sub_log: st.dataframe(pd.DataFrame(st.session_state.transactions), use_container_width=True)
 
-# --- TAB 5: ANALYST LAB (WITH FINANCIALS IN CRORES) ---
+# --- TAB 5: ANALYST LAB (WITH FINANCIALS) ---
 with tab_deep:
     st.markdown("<div class='section-header'>🔍 Analyst Masterclass</div>", unsafe_allow_html=True)
     
