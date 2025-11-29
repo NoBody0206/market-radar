@@ -12,7 +12,7 @@ import os
 import concurrent.futures
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Executive Market Radar 13.0", layout="wide", page_icon="🦅")
+st.set_page_config(page_title="Executive Market Radar 12.5", layout="wide", page_icon="🦅")
 WATCHLIST_FILE = "watchlist_data.json"
 TRADING_FILE = "trading_engine.json"
 TRANSACTION_FILE = "transactions.json"
@@ -20,24 +20,16 @@ TRANSACTION_FILE = "transactions.json"
 # --- PRO CSS STYLING ---
 st.markdown("""
 <style>
-    /* Global Styles */
     .stApp { background-color: #0E1117; }
-    
-    /* Card Design */
     .metric-container { background-color: #1E1E1E; border: 1px solid #333; border-radius: 10px; padding: 12px; margin-bottom: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
     .metric-value { font-size: 24px; font-weight: bold; margin: 2px 0; }
-    
-    /* Analysis Cards */
     .method-card { background-color: #262730; padding: 20px; border-radius: 10px; border-left: 5px solid #64B5F6; margin-bottom: 20px; }
     .score-good { color: #4CAF50; font-weight: bold; }
     .score-bad { color: #FF5252; font-weight: bold; }
     .score-neutral { color: #FFC107; font-weight: bold; }
-    
-    /* Headers */
     .section-header { font-size: 20px; font-weight: 700; margin-top: 20px; margin-bottom: 15px; color: #64B5F6; border-bottom: 1px solid #444; padding-bottom: 5px; }
     .news-card { border-left: 3px solid #4CAF50; background-color: #262730; padding: 10px; margin-bottom: 8px; border-radius: 4px; }
     .news-title { font-size: 14px; font-weight: 600; color: #E0E0E0; text-decoration: none; }
-    .fin-table { font-size: 12px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -104,8 +96,12 @@ def fetch_feed_parallel(url_list):
 def get_company_info(ticker):
     try:
         stock = yf.Ticker(ticker)
-        # Fetch financials separately to ensure we get the data
-        return stock.info, stock.history(period="1y"), stock.financials, stock.balance_sheet, stock.cashflow
+        # Fetching all statements safely
+        return (stock.info, 
+                stock.history(period="1y"), 
+                stock.financials, 
+                stock.balance_sheet, 
+                stock.cashflow)
     except: return None, None, None, None, None
 
 # --- RENDERERS ---
@@ -159,18 +155,16 @@ def execute_trade(market, action, ticker, qty, price):
     save_json(TRANSACTION_FILE, st.session_state.transactions); save_json(TRADING_FILE, st.session_state.trading); st.rerun()
 
 # --- MAIN APP ---
-st.title("🦅 Executive Market Radar 13.0")
-st.caption("The Complete Suite: Strategy | Financials | Global Intelligence")
+st.title("🦅 Executive Market Radar 12.5")
+st.caption("Financials in Crores | Stable Engine | 6 Strategy Frameworks")
 
 tab_india, tab_global, tab_ceo, tab_trade, tab_deep = st.tabs(["🇮🇳 India", "🌎 Global", "🏛️ CEO Radar", "📈 Trading Floor", "🧠 Analyst Lab"])
 
-# --- TAB 1 & 2 (Standard) ---
+# --- TAB 1, 2, 3, 4 (Stable Core) ---
 with tab_india:
     st.markdown("<div class='section-header'>📊 Benchmarks</div>", unsafe_allow_html=True)
     render_pro_metrics(get_ticker_data_parallel(["^NSEI", "^BSESN", "^NSEBANK", "USDINR=X"]))
-    if st.session_state.watchlist["india"]:
-        st.markdown("<div class='sub-header'>⭐ Watchlist</div>", unsafe_allow_html=True)
-        render_pro_metrics(get_ticker_data_parallel(st.session_state.watchlist["india"]))
+    if st.session_state.watchlist["india"]: render_pro_metrics(get_ticker_data_parallel(st.session_state.watchlist["india"]))
     st.divider()
     c1, c2, c3 = st.columns(3)
     with c1: st.markdown("**Startups**"); render_news(fetch_feed_parallel([get_google_rss("Indian Startup Funding")]))
@@ -184,12 +178,9 @@ with tab_global:
     st.divider()
     render_news(fetch_feed_parallel(["https://www.cnbc.com/id/100003114/device/rss/rss.html"]))
 
-# --- TAB 3: CEO RADAR (RESTORED NEWS + INFLATION INSIGHTS) ---
 with tab_ceo:
     st.markdown("<div class='section-header'>🏛️ Strategic Overview</div>", unsafe_allow_html=True)
-    
-    # 1. MACRO METRICS (Upgraded with Oil/Inflation)
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     with c1:
         st.subheader("⚠️ Yield Curve")
         data = get_ticker_data_parallel(["^TNX"])
@@ -199,14 +190,7 @@ with tab_ceo:
         rd = get_ticker_data_parallel(["HG=F", "GC=F"])
         pm = {d['symbol']: d['price'] for d in rd}
         if "HG=F" in pm and "GC=F" in pm: st.metric("Copper/Gold", f"{(pm['HG=F']/pm['GC=F'])*1000:.2f}", delta="> 2.0 = Expansion")
-    with c3:
-        st.subheader("🛢️ Inflation Proxy")
-        oil = get_ticker_data_parallel(["CL=F"])
-        if oil: st.metric("Crude Oil", f"${oil[0]['price']:.2f}", delta="Input Cost Risk", delta_color="inverse")
-
     st.divider()
-    
-    # 2. SECTOR HEATMAPS
     hm1, hm2 = st.columns(2)
     with hm1:
         st.subheader("🔥 Indian Sectors")
@@ -227,21 +211,6 @@ with tab_ceo:
             fig2.update_layout(height=250, margin=dict(t=0, b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
             st.plotly_chart(fig2, use_container_width=True)
 
-    st.divider()
-    
-    # 3. EXECUTIVE BRIEFING (RESTORED & UPGRADED)
-    st.markdown("<div class='section-header'>📰 The Executive Briefing</div>", unsafe_allow_html=True)
-    st.info("Top-tier intelligence on Inflation, Policy, and Geopolitics.")
-    
-    # Advanced Query for "High Level" news
-    ceo_urls = [
-        get_google_rss("Global Economy Outlook Inflation"),
-        get_google_rss("Central Bank Policy Rate"),
-        "https://www.cnbc.com/id/100003114/device/rss/rss.html" # Top News
-    ]
-    render_news(fetch_feed_parallel(ceo_urls))
-
-# --- TAB 4: TRADING FLOOR ---
 with tab_trade:
     st.markdown("<div class='section-header'>📈 Virtual Exchange</div>", unsafe_allow_html=True)
     sub_port, sub_log = st.tabs(["💼 Portfolio", "📜 History"])
@@ -277,7 +246,7 @@ with tab_trade:
             else: st.info("Empty Portfolio")
     with sub_log: st.dataframe(pd.DataFrame(st.session_state.transactions), use_container_width=True)
 
-# --- TAB 5: ANALYST LAB (WITH FINANCIALS & STRATEGY) ---
+# --- TAB 5: ANALYST LAB (WITH FINANCIALS IN CRORES) ---
 with tab_deep:
     st.markdown("<div class='section-header'>🔍 Analyst Masterclass</div>", unsafe_allow_html=True)
     
@@ -286,7 +255,7 @@ with tab_deep:
     with col_view: view_mode = st.radio("View Mode:", ["🧠 Strategy", "📑 Financials"], horizontal=True)
 
     if ticker:
-        info, hist, fin, bal, cashflow = get_company_info(ticker)
+        info, hist, fin, bal, cash = get_company_info(ticker)
         
         if info and not hist.empty:
             curr_price = hist['Close'].iloc[-1]
@@ -294,55 +263,36 @@ with tab_deep:
             st.divider()
 
             if view_mode == "🧠 Strategy":
-                # --- STRATEGY ENGINE (V12.0) ---
-                method = st.selectbox("Select Strategy:", 
-                                      ["🚀 Growth Hunter (CAN SLIM)", 
-                                       "🪄 Bargain Hunter (Magic Formula)", 
-                                       "Fortress Method (MOAT)", 
-                                       "🏦 Bankers' Method (CAMELS)", 
-                                       "🏇 Jockey Analysis (Management)", 
-                                       "🕵️ Scuttlebutt (Research)"])
+                # --- STRATEGY ENGINE (V12.0 Logic) ---
+                method = st.selectbox("Select Strategy:", ["🚀 Growth Hunter (CAN SLIM)", "🪄 Bargain Hunter (Magic Formula)", "Fortress Method (MOAT)", "🏦 Bankers' Method (CAMELS)", "🏇 Jockey Analysis (Management)", "🕵️ Scuttlebutt (Research)"])
                 
-                # ... (Strategy Code from V12.0 logic inserted below) ...
+                # ... (Strategy Code - Compressed for readability) ...
                 if method == "🚀 Growth Hunter (CAN SLIM)":
                     st.markdown("<div class='method-card'><h3>🚀 CAN SLIM Analysis</h3><p>Focus: High Growth.</p></div>", unsafe_allow_html=True)
-                    c1, c2, c3 = st.columns(3)
-                    eps_g = info.get('earningsGrowth', 0)
-                    c1.metric("EPS Growth", f"{eps_g*100:.1f}%")
-                    rev_g = info.get('revenueGrowth', 0)
-                    c2.metric("Rev Growth", f"{rev_g*100:.1f}%")
-                    high_52 = info.get('fiftyTwoWeekHigh', 0)
-                    dist = (curr_price / high_52) * 100 if high_52 else 0
-                    c3.metric("Vs 52W High", f"{dist:.0f}%")
-
+                    c1, c2 = st.columns(2)
+                    c1.metric("EPS Growth", f"{info.get('earningsGrowth', 0)*100:.1f}%")
+                    c2.metric("Rev Growth", f"{info.get('revenueGrowth', 0)*100:.1f}%")
                 elif method == "🪄 Bargain Hunter (Magic Formula)":
                     st.markdown("<div class='method-card'><h3>🪄 Magic Formula</h3><p>Focus: Quality + Value.</p></div>", unsafe_allow_html=True)
                     c1, c2 = st.columns(2)
                     pe = info.get('trailingPE', 0)
-                    ey = (1/pe * 100) if pe > 0 else 0
-                    c1.metric("Earnings Yield", f"{ey:.2f}%")
-                    roc = info.get('returnOnEquity', 0)
-                    c2.metric("Return on Equity", f"{roc*100:.2f}%")
-
+                    c1.metric("Earnings Yield", f"{(1/pe * 100):.2f}%" if pe else "N/A")
+                    c2.metric("ROE", f"{info.get('returnOnEquity', 0)*100:.2f}%")
                 elif method == "Fortress Method (MOAT)":
                     st.markdown("<div class='method-card'><h3>🏰 MOAT Analysis</h3><p>Focus: Durable Advantage.</p></div>", unsafe_allow_html=True)
-                    c1, c2, c3 = st.columns(3)
+                    c1, c2 = st.columns(2)
                     c1.metric("Gross Margin", f"{info.get('grossMargins', 0)*100:.1f}%")
-                    c2.metric("ROE", f"{info.get('returnOnEquity', 0)*100:.1f}%")
-                    c3.metric("Debt/Eq", f"{info.get('debtToEquity', 0)}%")
-
+                    c2.metric("Debt/Equity", f"{info.get('debtToEquity', 0)}%")
                 elif method == "🏦 Bankers' Method (CAMELS)":
                     st.markdown("<div class='method-card'><h3>🏦 CAMEL(S)</h3><p>Focus: Bank Safety.</p></div>", unsafe_allow_html=True)
                     c1, c2 = st.columns(2)
                     c1.metric("Debt/Equity", f"{info.get('debtToEquity', 'N/A')}")
                     c2.metric("ROA", f"{info.get('returnOnAssets', 0)*100:.2f}%")
-
                 elif method == "🏇 Jockey Analysis (Management)":
                     st.markdown("<div class='method-card'><h3>🏇 Jockey Analysis</h3><p>Focus: Insider Alignment.</p></div>", unsafe_allow_html=True)
                     c1, c2 = st.columns(2)
                     c1.metric("Insider Holding", f"{info.get('heldPercentInsiders', 0)*100:.1f}%")
-                    c2.metric("Dividend Yield", f"{info.get('dividendYield', 0)*100:.2f}%" if info.get('dividendYield') else "0%")
-
+                    c2.metric("Div Yield", f"{info.get('dividendYield', 0)*100:.2f}%" if info.get('dividendYield') else "0%")
                 elif method == "🕵️ Scuttlebutt (Research)":
                     st.markdown("<div class='method-card'><h3>🕵️ Scuttlebutt</h3><p>Soft Data Scan.</p></div>", unsafe_allow_html=True)
                     render_news(fetch_feed_parallel([get_google_rss(f"{info.get('shortName', ticker)} reviews scandal")]))
@@ -353,21 +303,30 @@ with tab_deep:
                 st.plotly_chart(fig, use_container_width=True)
 
             elif view_mode == "📑 Financials":
-                # --- FINANCIALS VIEW (RESTORED FROM V11.0) ---
-                st.subheader(f"📑 Financial Statements: {info.get('shortName', ticker)}")
+                st.subheader(f"📑 Financials: {info.get('shortName', ticker)} (In Crores)")
+                st.info("Values are divided by 1,00,00,000 (1 Cr) for readability.")
                 
-                f1, f2, f3 = st.tabs(["Income Statement", "Balance Sheet", "Cash Flow"])
+                f1, f2, f3 = st.tabs(["Income", "Balance Sheet", "Cash Flow"])
                 
+                # Function to convert to Crores
+                def to_crores(df):
+                    if df is not None:
+                        # Try to convert everything to numeric, errors to NaN
+                        df = df.apply(pd.to_numeric, errors='coerce')
+                        # Divide by 1 Crore
+                        return df.div(10000000)
+                    return None
+
+                fin_cr = to_crores(fin)
+                bal_cr = to_crores(bal)
+                cash_cr = to_crores(cash)
+
                 with f1:
-                    if fin is not None: st.dataframe(fin, use_container_width=True, height=500)
+                    if fin_cr is not None: st.dataframe(fin_cr.style.format("{:,.2f} Cr"), use_container_width=True, height=500)
                     else: st.warning("Income Statement Unavailable")
                 with f2:
-                    if bal is not None: st.dataframe(bal, use_container_width=True, height=500)
+                    if bal_cr is not None: st.dataframe(bal_cr.style.format("{:,.2f} Cr"), use_container_width=True, height=500)
                     else: st.warning("Balance Sheet Unavailable")
                 with f3:
-                    if cashflow is not None: st.dataframe(cashflow, use_container_width=True, height=500)
+                    if cash_cr is not None: st.dataframe(cash_cr.style.format("{:,.2f} Cr"), use_container_width=True, height=500)
                     else: st.warning("Cash Flow Unavailable")
-                
-                if fin is not None:
-                    csv = fin.to_csv().encode('utf-8')
-                    st.download_button("📥 Download Income Statement", csv, f"{ticker}_income.csv", "text/csv")
