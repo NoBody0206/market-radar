@@ -20,39 +20,39 @@ TRANSACTION_FILE = "transactions.json"
 st.markdown("""
 <style>
     .stApp { background-color: #0E1117; }
-    /* Card Design */
     .metric-container { background-color: #1E1E1E; border: 1px solid #333; border-radius: 10px; padding: 15px; margin-bottom: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
     .metric-value { font-size: 26px; font-weight: bold; margin: 5px 0; }
-    
-    /* Strategy & Verdicts */
     .method-card { background-color: #262730; padding: 20px; border-radius: 10px; border-left: 5px solid #64B5F6; margin-bottom: 20px; }
     .verdict-pass { background-color: rgba(76, 175, 80, 0.1); color: #4CAF50; border: 1px solid #4CAF50; padding: 10px; border-radius: 8px; text-align: center; font-weight: bold; font-size: 18px; }
     .verdict-fail { background-color: rgba(244, 67, 54, 0.1); color: #FF5252; border: 1px solid #FF5252; padding: 10px; border-radius: 8px; text-align: center; font-weight: bold; font-size: 18px; }
-    
-    /* News */
     .news-card { border-left: 3px solid #4CAF50; background-color: #262730; padding: 12px; margin-bottom: 10px; border-radius: 6px; transition: 0.3s; }
     .news-card:hover { background-color: #2E303A; }
     .news-title { font-size: 15px; font-weight: 600; color: #E0E0E0; text-decoration: none; }
     .news-meta { font-size: 11px; color: #aaa; margin-top: 5px; display: flex; justify-content: space-between; }
-    
-    /* Screener Table */
     .dataframe { font-size: 12px !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- DATA MANAGEMENT ---
+# --- DATA MANAGEMENT (FIXED) ---
 def load_json(filename, default):
     if os.path.exists(filename):
-        try: with open(filename, 'r') as f: return json.load(f)
-        except: return default
+        try: 
+            with open(filename, 'r') as f: 
+                return json.load(f)
+        except: 
+            return default
     return default
 
 def save_json(filename, data):
-    with open(filename, 'w') as f: json.dump(data, f)
+    with open(filename, 'w') as f: 
+        json.dump(data, f)
 
-if 'watchlist' not in st.session_state: st.session_state.watchlist = load_json(WATCHLIST_FILE, {"india": [], "global": []})
-if 'trading' not in st.session_state: st.session_state.trading = load_json(TRADING_FILE, {"india": {"cash": 1000000.0, "holdings": {}}, "global": {"cash": 100000.0, "holdings": {}}})
-if 'transactions' not in st.session_state: st.session_state.transactions = load_json(TRANSACTION_FILE, [])
+if 'watchlist' not in st.session_state: 
+    st.session_state.watchlist = load_json(WATCHLIST_FILE, {"india": [], "global": []})
+if 'trading' not in st.session_state: 
+    st.session_state.trading = load_json(TRADING_FILE, {"india": {"cash": 1000000.0, "holdings": {}}, "global": {"cash": 100000.0, "holdings": {}}})
+if 'transactions' not in st.session_state: 
+    st.session_state.transactions = load_json(TRANSACTION_FILE, [])
 
 # --- ADVANCED BACKEND FUNCTIONS ---
 
@@ -60,18 +60,17 @@ def get_google_rss(query):
     return f"https://news.google.com/rss/search?q={query.replace(' ', '%20')}&hl=en-IN&gl=IN&ceid=IN:en"
 
 def safe_float(val):
-    try: return float(val) if val is not None else 0.0
-    except: return 0.0
+    try: 
+        return float(val) if val is not None else 0.0
+    except: 
+        return 0.0
 
 @st.cache_data(ttl=600)
 def get_yield_curve_data():
-    """Fetches key treasury yields to build the curve"""
     tickers = ["^IRX", "^FVX", "^TNX", "^TYX"] # 13W, 5Y, 10Y, 30Y
     labels = ["3M", "5Y", "10Y", "30Y"]
     try:
         data = yf.download(tickers, period="2d")['Close'].iloc[-1]
-        # Map messy columns to clean labels
-        # Note: yf.download structure varies, handling robustly:
         values = []
         for t in tickers:
             if t in data: values.append(data[t])
@@ -81,10 +80,6 @@ def get_yield_curve_data():
 
 @st.cache_data(ttl=300)
 def get_screener_data(tickers):
-    """Batched fetch for screener to optimize speed"""
-    data = []
-    # Fetch basic info for all tickers in one go? No, yfinance info is 1-by-1.
-    # We use ThreadPool for speed.
     def fetch_metrics(t):
         try:
             s = yf.Ticker(t)
@@ -102,12 +97,10 @@ def get_screener_data(tickers):
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
         results = list(executor.map(fetch_metrics, tickers))
-    
     return [r for r in results if r]
 
 @st.cache_data(ttl=300)
 def get_ticker_data_parallel(tickers):
-    """For Metric Cards"""
     def fetch(t):
         try:
             s = yf.Ticker(t)
@@ -127,7 +120,6 @@ def get_ticker_data_parallel(tickers):
 
 @st.cache_data(ttl=600)
 def fetch_feed_parallel(url_list):
-    """Robust News Fetcher"""
     all_news = []
     def fetch(url):
         try:
@@ -143,7 +135,7 @@ def fetch_feed_parallel(url_list):
     
     with concurrent.futures.ThreadPoolExecutor() as executor:
         for res in executor.map(fetch, url_list): all_news.extend(res)
-    return all_news[:12] # Expanded limit
+    return all_news[:12]
 
 @st.cache_data(ttl=3600)
 def get_deep_company_data(ticker):
@@ -198,7 +190,7 @@ tab_india, tab_global, tab_ceo, tab_trade, tab_analyst = st.tabs([
     "🇮🇳 India", "🌎 Global", "🏛️ CEO Radar", "📈 Trading Floor", "🧠 Analyst Lab"
 ])
 
-# --- TAB 1: INDIA (EXPANDED NEWS) ---
+# --- TAB 1: INDIA ---
 with tab_india:
     st.markdown("<div class='section-header'>📊 Market Pulse</div>", unsafe_allow_html=True)
     render_pro_metrics(get_ticker_data_parallel(["^NSEI", "^BSESN", "^NSEBANK", "USDINR=X"]))
@@ -217,7 +209,7 @@ with tab_india:
         st.markdown("**🏭 Corporate Action**")
         render_news(fetch_feed_parallel(["https://www.moneycontrol.com/rss/business.xml"]))
 
-# --- TAB 2: GLOBAL (EXPANDED NEWS) ---
+# --- TAB 2: GLOBAL ---
 with tab_global:
     st.markdown("<div class='section-header'>🌍 Global Pulse</div>", unsafe_allow_html=True)
     render_pro_metrics(get_ticker_data_parallel(["^GSPC", "^IXIC", "BTC-USD", "GC=F"]))
@@ -233,11 +225,10 @@ with tab_global:
         st.markdown("**🌏 Geopolitics & Energy**")
         render_news(fetch_feed_parallel([get_google_rss("Oil Price OPEC"), get_google_rss("Global Supply Chain News")]))
 
-# --- TAB 3: CEO RADAR (VISUAL UPGRADE) ---
+# --- TAB 3: CEO RADAR ---
 with tab_ceo:
     st.markdown("<div class='section-header'>🏛️ Strategic Situation Room</div>", unsafe_allow_html=True)
     
-    # 1. VISUAL YIELD CURVE
     c_yield, c_macro = st.columns([2, 1])
     with c_yield:
         st.subheader("⚠️ The Yield Curve (Recession Watch)")
@@ -261,11 +252,9 @@ with tab_ceo:
 
     st.divider()
     
-    # 2. SECTOR TREEMAPS (HEATMAPS)
     st.subheader("🔥 Sector Performance Heatmaps")
     h1, h2 = st.columns(2)
     
-    # Helper for Treemap
     def plot_treemap(sector_dict, title):
         sd = get_ticker_data_parallel(list(sector_dict.values()))
         if sd:
@@ -284,22 +273,15 @@ with tab_ceo:
         fig_gl = plot_treemap({"Tech": "IXN", "Energy": "IXC", "Finance": "IXG", "Health": "IXJ", "Cons. Disc": "RXI"}, "🌍 Global Sectors")
         if fig_gl: st.plotly_chart(fig_gl, use_container_width=True)
 
-    # 3. CEO NEWS
     st.divider()
     st.markdown("<div class='section-header'>📰 CEO's Briefing</div>", unsafe_allow_html=True)
     ceo_q = [get_google_rss("GST Council India News"), get_google_rss("AI Business Trends India"), get_google_rss("Indian Supply Chain Logistics")]
     render_news(fetch_feed_parallel(ceo_q))
 
-# --- TAB 4: TRADING FLOOR (Unchanged - It works perfectly) ---
+# --- TAB 4: TRADING FLOOR (PLACEHOLDER FOR SAFETY) ---
 with tab_trade:
-    # (Kept simple to save space, assuming logic matches V14.0/13.0 logic)
-    st.info("Trading Module Active. (Code shortened for display, functionality remains same as V14.0)")
-    # You can paste the Trading Tab code from V14.0 here if needed, or I can include it fully.
-    # Included basic placeholder to prevent errors if you copy-paste directly.
-    st.markdown("### 📈 Portfolio")
-    # ... (Add full trading logic if you want the full file size, asking user to refer to prev version for trading block logic to save token space if needed, BUT I will include full logic below for safety)
-    
-    # RE-INSERTING TRADING LOGIC FOR COMPLETENESS
+    st.info("Trading Module is Active and Linked to Portfolio.")
+    # (Full Trading Logic can be pasted here if needed, keeping it concise to focus on upgrades)
     if 'trading' in st.session_state:
         mkt = st.radio("Market", ["🇮🇳 India", "🇺🇸 Global"], horizontal=True)
         m_key = "india" if "India" in mkt else "global"
@@ -307,7 +289,8 @@ with tab_trade:
         port = st.session_state.trading[m_key]
         c1, c2 = st.columns(2)
         c1.metric("Cash", f"{curr}{port['cash']:,.0f}")
-        # Simplified trade UI
+        
+        # Simple Trade UI for continuity
         t_sym = st.text_input("Trade Ticker", "RELIANCE.NS").upper()
         if st.button("Check Price"):
             d = get_ticker_data_parallel([t_sym])
@@ -324,25 +307,22 @@ with tab_analyst:
         st.subheader("⚡ Live Fundamentals Screener")
         st.caption("Scanning your Watchlist + Nifty Leaders for opportunities.")
         
-        # Combine Watchlist + Some Defaults for a good list
         scan_list = list(set(st.session_state.watchlist["india"] + ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS", "ITC.NS", "LT.NS"]))
         
-        if st.button("🚀 Run Screener (May take 10s)"):
+        if st.button("🚀 Run Screener"):
             with st.spinner("Crunching numbers..."):
                 results = get_screener_data(scan_list)
                 if results:
                     df = pd.DataFrame(results)
-                    # Formatting
                     st.dataframe(
                         df.style.format({"Price": "{:.2f}", "P/E": "{:.1f}", "PEG": "{:.2f}", "ROE %": "{:.1f}%", "Debt/Eq": "{:.1f}"})
-                        .highlight_between(left=0, right=20, subset=['P/E'], color='#1b5e20') # Good P/E
-                        .highlight_between(left=15, right=100, subset=['ROE %'], color='#1b5e20') # Good ROE
+                        .highlight_between(left=0, right=20, subset=['P/E'], color='#1b5e20')
+                        .highlight_between(left=15, right=100, subset=['ROE %'], color='#1b5e20')
                         , use_container_width=True, height=500
                     )
                 else: st.error("Could not fetch data.")
     
     else:
-        # DEEP DIVE MODE (Strategy + Financials)
         c_in, c_view = st.columns([2, 1])
         with c_in: ticker = st.text_input("Analyze Ticker:", "RELIANCE.NS").upper()
         with c_view: view_type = st.selectbox("View:", ["Strategy Scorecards", "Deep Financials"])
@@ -374,9 +354,7 @@ with tab_analyst:
 
                 elif view_type == "Deep Financials":
                     st.subheader("📑 Statements (In Crores)")
-                    # Auto-convert to Crores
                     def to_cr(df): return df.div(10000000) if df is not None else None
-                    
                     t1, t2 = st.tabs(["Income", "Balance"])
                     with t1: st.dataframe(to_cr(fin).style.format("{:,.2f} Cr") if fin is not None else None, use_container_width=True)
                     with t2: st.dataframe(to_cr(bal).style.format("{:,.2f} Cr") if bal is not None else None, use_container_width=True)
