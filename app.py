@@ -38,29 +38,37 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- DATA MANAGEMENT ---
+# --- DATA MANAGEMENT (FIXED SYNTAX) ---
 def load_json(filename, default):
     if os.path.exists(filename):
-        try: with open(filename, 'r') as f: return json.load(f)
-        except: return default
+        try:
+            with open(filename, 'r') as f:
+                return json.load(f)
+        except:
+            return default
     return default
 
 def save_json(filename, data):
-    with open(filename, 'w') as f: json.dump(data, f)
+    with open(filename, 'w') as f:
+        json.dump(data, f)
 
-if 'watchlist' not in st.session_state: st.session_state.watchlist = load_json(WATCHLIST_FILE, {"india": [], "global": []})
-if 'trading' not in st.session_state: st.session_state.trading = load_json(TRADING_FILE, {"india": {"cash": 1000000.0, "holdings": {}}, "global": {"cash": 100000.0, "holdings": {}}})
-if 'transactions' not in st.session_state: st.session_state.transactions = load_json(TRANSACTION_FILE, [])
+if 'watchlist' not in st.session_state:
+    st.session_state.watchlist = load_json(WATCHLIST_FILE, {"india": [], "global": []})
+if 'trading' not in st.session_state:
+    st.session_state.trading = load_json(TRADING_FILE, {"india": {"cash": 1000000.0, "holdings": {}}, "global": {"cash": 100000.0, "holdings": {}}})
+if 'transactions' not in st.session_state:
+    st.session_state.transactions = load_json(TRANSACTION_FILE, [])
 
 # --- BACKEND FUNCTIONS ---
 
 def get_google_rss(query): 
-    # Added "when:1d" to get fresh news if possible, though Google RSS handling varies
     return f"https://news.google.com/rss/search?q={query.replace(' ', '%20')}&hl=en-IN&gl=IN&ceid=IN:en"
 
 def safe_float(val):
-    try: return float(val) if val is not None else 0.0
-    except: return 0.0
+    try:
+        return float(val) if val is not None else 0.0
+    except:
+        return 0.0
 
 @st.cache_data(ttl=600)
 def get_yield_curve_data():
@@ -70,10 +78,13 @@ def get_yield_curve_data():
         data = yf.download(tickers, period="2d")['Close'].iloc[-1]
         values = []
         for t in tickers:
-            if t in data: values.append(data[t])
-            else: values.append(0)
+            if t in data:
+                values.append(data[t])
+            else:
+                values.append(0)
         return labels, values
-    except: return [], []
+    except:
+        return [], []
 
 @st.cache_data(ttl=300)
 def get_screener_data(tickers):
@@ -90,7 +101,8 @@ def get_screener_data(tickers):
                 "Debt/Eq": i.get('debtToEquity', 0),
                 "Sector": i.get('sector', 'N/A')
             }
-        except: return None
+        except:
+            return None
     with concurrent.futures.ThreadPoolExecutor() as executor:
         results = list(executor.map(fetch_metrics, tickers))
     return [r for r in results if r]
@@ -107,7 +119,8 @@ def get_ticker_data_parallel(tickers):
                     "change": ((h['Close'].iloc[-1]-h['Close'].iloc[-2])/h['Close'].iloc[-2])*100,
                     "high": h['High'].iloc[-1], "low": h['Low'].iloc[-1], "hist": h['Close'].tolist()
                 }
-        except: return None
+        except:
+            return None
         return None
     with concurrent.futures.ThreadPoolExecutor() as executor:
         results = [r for r in executor.map(fetch, tickers) if r]
@@ -119,18 +132,21 @@ def fetch_feed_parallel(url_list):
     def fetch(url):
         try:
             f = feedparser.parse(url)
-            if hasattr(f, 'bozo') and f.bozo == 1: return []
+            if hasattr(f, 'bozo') and f.bozo == 1:
+                return []
             return [{
                 "title": e.title, "link": e.link, 
                 "source": e.source.title if 'source' in e else "News", 
                 "date": e.published if 'published' in e else datetime.now().strftime("%a, %d %b %Y %H:%M:%S GMT"),
                 "mood": "🟢" if TextBlob(e.title).sentiment.polarity > 0.1 else ("🔴" if TextBlob(e.title).sentiment.polarity < -0.1 else "⚪"),
                 "timestamp": e.published_parsed if 'published_parsed' in e else time.localtime()
-            } for e in f.entries[:5]] # Get more to sort later
-        except: return []
+            } for e in f.entries[:5]]
+        except:
+            return []
     
     with concurrent.futures.ThreadPoolExecutor() as executor:
-        for res in executor.map(fetch, url_list): all_news.extend(res)
+        for res in executor.map(fetch, url_list):
+            all_news.extend(res)
     
     # SORTING: New to Old
     all_news.sort(key=lambda x: x['timestamp'], reverse=True)
@@ -141,11 +157,13 @@ def get_deep_company_data(ticker):
     try:
         s = yf.Ticker(ticker)
         return s.info, s.history(period="1y"), s.financials, s.balance_sheet, s.cashflow
-    except: return None, None, None, None, None
+    except:
+        return None, None, None, None, None
 
 # --- RENDERERS ---
 def render_pro_metrics(data_list):
-    if not data_list: st.caption("Loading..."); return
+    if not data_list:
+        st.caption("Loading..."); return
     cols = st.columns(len(data_list)) if len(data_list) <= 4 else st.columns(4)
     for i, d in enumerate(data_list):
         col = cols[i % 4] if i >= 4 else cols[i]
@@ -168,9 +186,9 @@ def render_pro_metrics(data_list):
             st.plotly_chart(fig, use_container_width=True, config={'staticPlot': True})
 
 def render_news(news):
-    if not news: st.caption("No recent updates."); return
+    if not news:
+        st.caption("No recent updates."); return
     for n in news:
-        # Clean date string for display
         display_date = n['date'][:16] if len(n['date']) > 16 else n['date']
         st.markdown(f"""
         <div class="news-card">
@@ -193,24 +211,36 @@ tab_india, tab_global, tab_ceo, tab_trade, tab_analyst = st.tabs([
 with tab_india:
     st.markdown("<div class='section-header'>📊 Market Pulse</div>", unsafe_allow_html=True)
     render_pro_metrics(get_ticker_data_parallel(["^NSEI", "^BSESN", "^NSEBANK", "USDINR=X"]))
-    if st.session_state.watchlist["india"]: render_pro_metrics(get_ticker_data_parallel(st.session_state.watchlist["india"]))
+    if st.session_state.watchlist["india"]:
+        render_pro_metrics(get_ticker_data_parallel(st.session_state.watchlist["india"]))
     st.divider()
     c1, c2, c3 = st.columns(3)
-    with c1: st.markdown("**Startups**"); render_news(fetch_feed_parallel([get_google_rss("Indian Startup Funding VC"), get_google_rss("IPO India News")]))
-    with c2: st.markdown("**RBI & Economy**"); render_news(fetch_feed_parallel([get_google_rss("RBI Policy Inflation India"), get_google_rss("Indian Economy GDP")]))
-    with c3: st.markdown("**Corporate**"); render_news(fetch_feed_parallel(["https://www.moneycontrol.com/rss/business.xml"]))
+    with c1:
+        st.markdown("**Startups**")
+        render_news(fetch_feed_parallel([get_google_rss("Indian Startup Funding VC"), get_google_rss("IPO India News")]))
+    with c2:
+        st.markdown("**RBI & Economy**")
+        render_news(fetch_feed_parallel([get_google_rss("RBI Policy Inflation India"), get_google_rss("Indian Economy GDP")]))
+    with c3:
+        st.markdown("**Corporate**")
+        render_news(fetch_feed_parallel(["https://www.moneycontrol.com/rss/business.xml"]))
 
 # --- TAB 2: GLOBAL ---
 with tab_global:
     st.markdown("<div class='section-header'>🌍 Global Pulse</div>", unsafe_allow_html=True)
     render_pro_metrics(get_ticker_data_parallel(["^GSPC", "^IXIC", "BTC-USD", "GC=F"]))
-    if st.session_state.watchlist["global"]: render_pro_metrics(get_ticker_data_parallel(st.session_state.watchlist["global"]))
+    if st.session_state.watchlist["global"]:
+        render_pro_metrics(get_ticker_data_parallel(st.session_state.watchlist["global"]))
     st.divider()
     c1, c2 = st.columns(2)
-    with c1: st.markdown("**Fed & Markets**"); render_news(fetch_feed_parallel([get_google_rss("Federal Reserve Rates"), "https://www.cnbc.com/id/100003114/device/rss/rss.html"]))
-    with c2: st.markdown("**Geopolitics**"); render_news(fetch_feed_parallel([get_google_rss("Oil Price OPEC"), get_google_rss("Global Supply Chain")]))
+    with c1:
+        st.markdown("**Fed & Markets**")
+        render_news(fetch_feed_parallel([get_google_rss("Federal Reserve Rates"), "https://www.cnbc.com/id/100003114/device/rss/rss.html"]))
+    with c2:
+        st.markdown("**Geopolitics**")
+        render_news(fetch_feed_parallel([get_google_rss("Oil Price OPEC"), get_google_rss("Global Supply Chain")]))
 
-# --- TAB 3: CEO RADAR (FIXED PULSE) ---
+# --- TAB 3: CEO RADAR ---
 with tab_ceo:
     st.markdown("<div class='section-header'>🏛️ Strategic Situation Room</div>", unsafe_allow_html=True)
     c_yield, c_macro = st.columns([2, 1])
@@ -222,26 +252,26 @@ with tab_ceo:
             fig_yield.add_trace(go.Scatter(x=labels, y=values, mode='lines+markers', line=dict(color='#FFA726', width=4), marker=dict(size=10)))
             fig_yield.update_layout(height=250, title="US Treasury Yields", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', yaxis_title="Yield %")
             st.plotly_chart(fig_yield, use_container_width=True)
-        else: st.warning("Yield Curve Data Unavailable")
+        else:
+            st.warning("Yield Curve Data Unavailable")
     
     with c_macro:
         st.subheader("🏗️ Economic Pulse")
-        # Added Oil (CL=F) and Silver (SI=F) as backup if Copper (HG=F) fails
         rd = get_ticker_data_parallel(["HG=F", "GC=F", "CL=F", "SI=F"])
         pmap = {d['symbol']: d['price'] for d in rd}
         
-        # Pulse Logic with Fallback
+        # Fallback Logic
         if "HG=F" in pmap and "GC=F" in pmap:
             ratio = (pmap["HG=F"]/pmap["GC=F"])*1000
             st.metric("Copper/Gold (Growth)", f"{ratio:.2f}", delta="> 2.0 = Expansion")
         elif "CL=F" in pmap and "GC=F" in pmap:
-             # Fallback: Oil/Gold is also a growth proxy
              ratio = (pmap["CL=F"]/pmap["GC=F"])*10
              st.metric("Oil/Gold (Proxy)", f"{ratio:.2f}", delta="Alternative Metric")
         else:
             st.warning("Commodity Data Delayed")
 
-        if "CL=F" in pmap: st.metric("Crude Oil (Inflation)", f"${pmap['CL=F']:.2f}", delta_color="inverse")
+        if "CL=F" in pmap:
+            st.metric("Crude Oil (Inflation)", f"${pmap['CL=F']:.2f}", delta_color="inverse")
 
     st.divider()
     st.subheader("🔥 Sector Performance Heatmaps")
@@ -263,7 +293,6 @@ with tab_ceo:
 
 # --- TAB 4: TRADING FLOOR ---
 with tab_trade:
-    # (Keeping Trading Logic concise for stability - standard V15 logic)
     if 'trading' in st.session_state:
         st.markdown("<div class='section-header'>📈 Virtual Exchange</div>", unsafe_allow_html=True)
         mkt = st.radio("Market", ["🇮🇳 India", "🇺🇸 Global"], horizontal=True)
@@ -279,7 +308,7 @@ with tab_trade:
             if d: st.success(f"Price: {d[0]['price']}")
             else: st.error("Ticker Invalid")
 
-# --- TAB 5: ANALYST LAB (FULL FRAMEWORKS + CHART) ---
+# --- TAB 5: ANALYST LAB ---
 with tab_analyst:
     st.markdown("<div class='section-header'>🔍 Analyst Masterclass</div>", unsafe_allow_html=True)
     
@@ -313,7 +342,6 @@ with tab_analyst:
                 if view_type == "Strategy Scorecards":
                     strat = st.selectbox("Framework:", ["🚀 CAN SLIM", "🪄 Magic Formula", "🏰 MOAT", "🏦 CAMELS (Bank)", "🏇 Jockey (Mgmt)", "🕵️ Scuttlebutt"])
                     
-                    # --- EXPANDED LOGIC FOR ALL 6 ---
                     def get_val(k, d=0): return safe_float(info.get(k, d))
 
                     if strat == "🚀 CAN SLIM":
@@ -324,7 +352,6 @@ with tab_analyst:
                         high52 = get_val('fiftyTwoWeekHigh')
                         curr = hist['Close'].iloc[-1]
                         dist = (curr/high52)*100 if high52 else 0
-                        
                         c1.metric("EPS Growth", f"{eps*100:.1f}%", delta="Target > 20%")
                         c2.metric("Rev Growth", f"{rev*100:.1f}%", delta="Target > 20%")
                         c3.metric("Near High", f"{dist:.0f}%", delta="Target > 85%")
@@ -337,7 +364,6 @@ with tab_analyst:
                         pe = get_val('trailingPE')
                         roc = get_val('returnOnEquity')
                         ey = (1/pe * 100) if pe > 0 else 0
-                        
                         c1.metric("Earnings Yield", f"{ey:.2f}%", delta="Target > 5%")
                         c2.metric("ROC (ROE)", f"{roc*100:.1f}%", delta="Target > 15%")
                         if ey > 5 and roc > 0.15: st.success("Verdict: PASS ✅")
@@ -349,7 +375,6 @@ with tab_analyst:
                         pm = get_val('grossMargins')
                         roe = get_val('returnOnEquity')
                         de = get_val('debtToEquity')
-                        
                         c1.metric("Gross Margin", f"{pm*100:.1f}%", delta="Target > 40%")
                         c2.metric("ROE", f"{roe*100:.1f}%", delta="Target > 15%")
                         c3.metric("Debt/Eq", f"{de:.0f}%", delta="Target < 50%", delta_color="inverse")
@@ -357,13 +382,10 @@ with tab_analyst:
                     elif strat == "🏦 CAMELS (Bank)":
                         st.markdown("<div class='method-card'><h3>🏦 CAMELS Rating</h3><p>Focus: Bank Safety & Capital</p></div>", unsafe_allow_html=True)
                         c1, c2, c3 = st.columns(3)
-                        # Capital
-                        de = get_val('debtToEquity') # Proxy for leverage
-                        c1.metric("Capital (Lev)", f"{de:.0f}%", help="High leverage is normal for banks, check if stable.")
-                        # Asset Quality (ROA)
+                        de = get_val('debtToEquity') 
+                        c1.metric("Capital (Lev)", f"{de:.0f}%", help="High leverage is normal for banks.")
                         roa = get_val('returnOnAssets')
                         c2.metric("Assets (ROA)", f"{roa*100:.2f}%", help="> 1% is good for banks.")
-                        # Management (Insider)
                         ins = get_val('heldPercentInsiders')
                         c3.metric("Mgmt (Insider)", f"{ins*100:.1f}%")
 
@@ -380,7 +402,6 @@ with tab_analyst:
                     elif strat == "🕵️ Scuttlebutt":
                         st.markdown("<div class='method-card'><h3>🕵️ Scuttlebutt</h3><p>Qualitative Research</p></div>", unsafe_allow_html=True)
                         st.info("Reading 'Soft Data' from news...")
-                        # Targeted News
                         scuttle_q = f"{info.get('shortName', ticker)} reviews scandal lawsuit management"
                         render_news(fetch_feed_parallel([get_google_rss(scuttle_q)]))
 
