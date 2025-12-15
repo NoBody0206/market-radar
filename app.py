@@ -50,15 +50,19 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- DATA MANAGEMENT ---
+# --- DATA MANAGEMENT (FIXED SYNTAX) ---
 def load_json(filename, default):
     if os.path.exists(filename):
-        try: with open(filename, 'r') as f: return json.load(f)
-        except: return default
+        try:
+            with open(filename, 'r') as f:
+                return json.load(f)
+        except:
+            return default
     return default
 
 def save_json(filename, data):
-    with open(filename, 'w') as f: json.dump(data, f)
+    with open(filename, 'w') as f:
+        json.dump(data, f)
 
 if 'watchlist' not in st.session_state: st.session_state.watchlist = load_json(WATCHLIST_FILE, {"india": [], "global": []})
 if 'trading' not in st.session_state: st.session_state.trading = load_json(TRADING_FILE, {"india": {"cash": 1000000.0, "holdings": {}}, "global": {"cash": 100000.0, "holdings": {}}})
@@ -88,7 +92,6 @@ def get_yield_curve_data():
 
 @st.cache_data(ttl=300)
 def get_market_movers_india():
-    """Scans top Indian stocks to find Gainers vs Losers"""
     tickers = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", "BHARTIARTL.NS", "ITC.NS", "SBIN.NS", "LICI.NS", "HINDUNILVR.NS", "LT.NS", "BAJFINANCE.NS", "MARUTI.NS", "TATAMOTORS.NS", "SUNPHARMA.NS"]
     movers = []
     def fetch_change(t):
@@ -278,14 +281,14 @@ with tab_ceo:
     with c_pulse:
         st.subheader("🏗️ Economic Pulse")
         rd = get_ticker_data_parallel(["USDINR=X", "DX-Y.NYB", "^TNX"])
-        pmap = {d['symbol']: d['price'] for d in rd}
-        
-        t1, t2 = st.tabs(["🇮🇳 India", "🌎 Global"])
-        with t1:
-            if "USDINR=X" in pmap: st.metric("USD/INR", f"₹{pmap['USDINR=X']:.2f}")
-        with t2:
-            if "DX-Y.NYB" in pmap: st.metric("Dollar Index", f"{pmap['DX-Y.NYB']:.2f}")
-            if "^TNX" in pmap: st.metric("US 10Y Yield", f"{pmap['^TNX']:.2f}%")
+        if rd:
+            pmap = {d['symbol']: d['price'] for d in rd}
+            t1, t2 = st.tabs(["🇮🇳 India", "🌎 Global"])
+            with t1:
+                if "USDINR=X" in pmap: st.metric("USD/INR", f"₹{pmap['USDINR=X']:.2f}")
+            with t2:
+                if "DX-Y.NYB" in pmap: st.metric("Dollar Index", f"{pmap['DX-Y.NYB']:.2f}")
+                if "^TNX" in pmap: st.metric("US 10Y Yield", f"{pmap['^TNX']:.2f}%")
 
     st.divider()
     
