@@ -12,7 +12,7 @@ import concurrent.futures
 import time
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Executive Market Radar 18.0", layout="wide", page_icon="🦅")
+st.set_page_config(page_title="Executive Market Radar 19.0", layout="wide", page_icon="🦅")
 WATCHLIST_FILE = "watchlist_data.json"
 TRADING_FILE = "trading_engine.json"
 TRANSACTION_FILE = "transactions.json"
@@ -50,7 +50,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- DATA MANAGEMENT (FIXED SYNTAX) ---
+# --- DATA MANAGEMENT ---
 def load_json(filename, default):
     if os.path.exists(filename):
         try:
@@ -93,11 +93,12 @@ def get_yield_curve_data():
 @st.cache_data(ttl=300)
 def get_market_movers_india():
     tickers = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", "BHARTIARTL.NS", "ITC.NS", "SBIN.NS", "LICI.NS", "HINDUNILVR.NS", "LT.NS", "BAJFINANCE.NS", "MARUTI.NS", "TATAMOTORS.NS", "SUNPHARMA.NS"]
-    movers = []
+    
     def fetch_change(t):
         try:
             stock = yf.Ticker(t)
-            hist = stock.history(period="2d")
+            # Use '1d' interval to ensure daily granularity
+            hist = stock.history(period="5d", interval="1d")
             if len(hist) > 1:
                 curr = hist['Close'].iloc[-1]
                 prev = hist['Close'].iloc[-2]
@@ -136,7 +137,7 @@ def get_ticker_data_parallel(tickers):
     def fetch(t):
         try:
             s = yf.Ticker(t)
-            h = s.history(period="5d")
+            h = s.history(period="5d", interval="1d")
             if len(h) > 1:
                 return {
                     "symbol": t, "price": h['Close'].iloc[-1], 
@@ -166,7 +167,6 @@ def fetch_feed_parallel(url_list):
     with concurrent.futures.ThreadPoolExecutor() as executor:
         for res in executor.map(fetch, url_list): all_news.extend(res)
     
-    # Sorting Newest to Oldest
     all_news.sort(key=lambda x: x['timestamp'], reverse=True)
     return all_news[:10]
 
@@ -179,16 +179,15 @@ def get_deep_company_data(ticker):
 
 # --- RENDERERS ---
 
-def render_pro_metrics(data_list):
-    if not data_list: st.caption("Loading..."); return
+def render_pro_metrics(data_list, key_prefix="metric"): # ADDED key_prefix to fix error
+    if not data_list: 
+        st.caption("Loading..."); return
     cols = st.columns(len(data_list)) if len(data_list) <= 4 else st.columns(4)
     for i, d in enumerate(data_list):
         col = cols[i % 4] if i >= 4 else cols[i]
         with col:
             c = "#00C805" if d['change'] >= 0 else "#FF3B30"
             bg = f"rgba({0 if d['change']>=0 else 255}, {200 if d['change']>=0 else 59}, {5 if d['change']>=0 else 48}, 0.1)"
-            denom = d['high'] - d['low']
-            rng = ((d['price'] - d['low']) / denom) * 100 if denom > 0 else 50
             
             st.markdown(f"""
             <div class="metric-container" style="border-left: 4px solid {c}; background: linear-gradient(180deg, #1E1E1E 0%, {bg} 100%);">
@@ -196,16 +195,19 @@ def render_pro_metrics(data_list):
                 <div class="metric-value" style="color:{c}">{d['price']:,.2f}</div>
                 <div class="{ 'metric-delta-pos' if d['change']>=0 else 'metric-delta-neg' }">{d['change']:+.2f}%</div>
                 <div style="margin-top: 8px; height:4px; background:#333; position:relative;">
-                    <div style="width:{rng}%; height:100%; background:{c}; position:absolute;"></div>
+                    <div style="width:50%; height:100%; background:{c}; position:absolute;"></div>
                 </div>
             </div>""", unsafe_allow_html=True)
             
             fig = go.Figure(data=go.Scatter(y=d['hist'], mode='lines', fill='tozeroy', line=dict(color=c, width=2), fillcolor=bg))
             fig.update_layout(margin=dict(l=0,r=0,t=0,b=0), height=35, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', xaxis=dict(visible=False), yaxis=dict(visible=False), showlegend=False)
-            st.plotly_chart(fig, use_container_width=True, config={'staticPlot': True})
+            
+            # FIXED: Added unique key to prevent DuplicateElementId error
+            st.plotly_chart(fig, use_container_width=True, config={'staticPlot': True}, key=f"{key_prefix}_chart_{d['symbol']}_{i}")
 
 def render_news(news):
-    if not news: st.caption("No recent updates."); return
+    if not news: 
+        st.caption("No recent updates."); return
     for n in news:
         display_date = n['date'][:16] if len(n['date']) > 16 else n['date']
         st.markdown(f"""
@@ -218,29 +220,27 @@ def render_news(news):
         </div>""", unsafe_allow_html=True)
 
 # --- APP LAYOUT ---
-st.title("🦅 Executive Market Radar 18.0")
-st.caption("Strategic Intelligence | BlackRock Edition")
+st.title("🦅 Executive Market Radar 19.0")
+st.caption("Strategic Intelligence | Error-Free Edition")
 
 tab_india, tab_global, tab_ceo, tab_trade, tab_analyst = st.tabs([
     "🇮🇳 India", "🌎 Global", "🏛️ CEO Radar", "📈 Trading Floor", "🧠 Analyst Lab"
 ])
 
-# --- TAB 1: INDIA (Upgraded with Commodities) ---
+# --- TAB 1: INDIA ---
 with tab_india:
     st.markdown("<div class='section-header'>📊 Market Pulse</div>", unsafe_allow_html=True)
-    # Indices + Commodities
     tickers = ["^NSEI", "^BSESN", "^NSEBANK", "GC=F", "SI=F", "CL=F"] 
     data = get_ticker_data_parallel(tickers)
     
-    # Custom Labels
     label_map = {"GC=F": "GOLD", "SI=F": "SILVER", "CL=F": "CRUDE OIL", "^NSEI": "NIFTY 50", "^BSESN": "SENSEX"}
     if data:
         for d in data: d['symbol'] = label_map.get(d['symbol'], d['symbol'])
-        render_pro_metrics(data)
+        render_pro_metrics(data, key_prefix="ind_pulse") # Unique Key
 
     if st.session_state.watchlist["india"]: 
         st.subheader("⭐ Watchlist")
-        render_pro_metrics(get_ticker_data_parallel(st.session_state.watchlist["india"]))
+        render_pro_metrics(get_ticker_data_parallel(st.session_state.watchlist["india"]), key_prefix="ind_watch") # Unique Key
     
     st.divider()
     c1, c2, c3 = st.columns(3)
@@ -248,7 +248,7 @@ with tab_india:
     with c2: st.markdown("**🏦 Finance & Policy**"); render_news(fetch_feed_parallel([get_google_rss("RBI Policy India"), get_google_rss("Indian Bank Stocks News")]))
     with c3: st.markdown("**🛢️ Commodities & Infra**"); render_news(fetch_feed_parallel([get_google_rss("India Infrastructure News"), get_google_rss("Gold Price India")]))
 
-# --- TAB 2: GLOBAL (Upgraded with Commodities) ---
+# --- TAB 2: GLOBAL ---
 with tab_global:
     st.markdown("<div class='section-header'>🌍 Global Pulse</div>", unsafe_allow_html=True)
     tickers = ["^GSPC", "^IXIC", "BTC-USD", "GC=F", "HG=F", "NG=F"]
@@ -256,18 +256,21 @@ with tab_global:
     label_map_gl = {"HG=F": "COPPER", "NG=F": "NATURAL GAS", "^GSPC": "S&P 500", "BTC-USD": "BITCOIN"}
     if data:
         for d in data: d['symbol'] = label_map_gl.get(d['symbol'], d['symbol'])
-        render_pro_metrics(data)
+        render_pro_metrics(data, key_prefix="gl_pulse") # Unique Key
     
+    if st.session_state.watchlist["global"]:
+        st.subheader("⭐ Watchlist")
+        render_pro_metrics(get_ticker_data_parallel(st.session_state.watchlist["global"]), key_prefix="gl_watch") # Unique Key
+
     st.divider()
     c1, c2 = st.columns(2)
     with c1: st.markdown("**🇺🇸 Wall St & Fed**"); render_news(fetch_feed_parallel([get_google_rss("Federal Reserve News"), get_google_rss("Wall Street Market Analysis")]))
     with c2: st.markdown("**🌏 Geopolitics & Energy**"); render_news(fetch_feed_parallel([get_google_rss("Global Oil Prices OPEC"), get_google_rss("China Economy News")]))
 
-# --- TAB 3: CEO RADAR (V16 Core + V17 Enhancements) ---
+# --- TAB 3: CEO RADAR ---
 with tab_ceo:
     st.markdown("<div class='section-header'>🏛️ Strategic Situation Room</div>", unsafe_allow_html=True)
     
-    # 1. Yield Curve (Preserved from 16.0)
     c_yield, c_pulse = st.columns([2, 1])
     with c_yield:
         st.subheader("⚠️ US Yield Curve (Recession Watch)")
@@ -275,9 +278,8 @@ with tab_ceo:
         if labels:
             fig = go.Figure(go.Scatter(x=labels, y=values, mode='lines+markers', line=dict(color='#FFA726', width=4)))
             fig.update_layout(height=250, title="Yield Curve", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', yaxis_title="Yield %")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="yield_chart")
     
-    # 2. Economic Pulse (Split India/Global - V17 Request)
     with c_pulse:
         st.subheader("🏗️ Economic Pulse")
         rd = get_ticker_data_parallel(["USDINR=X", "DX-Y.NYB", "^TNX"])
@@ -292,7 +294,6 @@ with tab_ceo:
 
     st.divider()
     
-    # 3. Market Movers Engine (Added from V17)
     st.subheader("🏆 Market Movers (Nifty Leaders)")
     movers = get_market_movers_india()
     if movers:
@@ -308,7 +309,6 @@ with tab_ceo:
             
     st.divider()
     
-    # 4. Sector Heatmaps (Preserved from V16)
     st.subheader("🔥 Sector Performance")
     def plot_treemap(sector_dict, title):
         sd = get_ticker_data_parallel(list(sector_dict.values()))
@@ -322,12 +322,12 @@ with tab_ceo:
     h1, h2 = st.columns(2)
     with h1: 
         f = plot_treemap({"Banks": "^NSEBANK", "IT": "^CNXIT", "Auto": "^CNXAUTO", "Energy": "^CNXENERGY"}, "India Sectors")
-        if f: st.plotly_chart(f, use_container_width=True)
+        if f: st.plotly_chart(f, use_container_width=True, key="tree_in")
     with h2:
         f = plot_treemap({"Tech": "IXN", "Energy": "IXC", "Finance": "IXG"}, "Global Sectors")
-        if f: st.plotly_chart(f, use_container_width=True)
+        if f: st.plotly_chart(f, use_container_width=True, key="tree_gl")
 
-# --- TAB 4: TRADING FLOOR (Smart Search Fixed) ---
+# --- TAB 4: TRADING FLOOR ---
 with tab_trade:
     if 'trading' in st.session_state:
         st.markdown("<div class='section-header'>📈 Virtual Exchange</div>", unsafe_allow_html=True)
@@ -339,21 +339,15 @@ with tab_trade:
         c1, c2 = st.columns(2)
         c1.metric("Cash", f"{curr}{port['cash']:,.0f}")
         
-        # Smart Search
         t_sym = st.text_input("Trade Ticker (e.g., ZOMATO)", "RELIANCE").upper()
-        
-        # Auto-append .NS if missing for India
-        if m_key == "india" and not t_sym.endswith(".NS") and len(t_sym) > 0:
-            final_ticker = f"{t_sym}.NS"
-        else:
-            final_ticker = t_sym
+        if m_key == "india" and not t_sym.endswith(".NS") and len(t_sym) > 0: final_ticker = f"{t_sym}.NS"
+        else: final_ticker = t_sym
 
         if final_ticker:
             d = get_ticker_data_parallel([final_ticker])
             if d:
                 lp = d[0]['price']
                 st.success(f"Verified: {d[0]['symbol']} @ {curr}{lp:,.2f}")
-                
                 c_act, c_qty, c_btn = st.columns([1,1,1])
                 act = c_act.selectbox("Action", ["BUY", "SELL"])
                 qty = c_qty.number_input("Qty", 1, 10000)
@@ -390,7 +384,7 @@ with tab_trade:
         if port['holdings']:
             st.dataframe(pd.DataFrame([{"Ticker": k, "Qty": v['qty'], "Avg": f"{curr}{v['avg_price']:.2f}"} for k,v in port['holdings'].items()]), use_container_width=True)
 
-# --- TAB 5: ANALYST LAB (V16 Core + Scuttlebutt Upgrade) ---
+# --- TAB 5: ANALYST LAB ---
 with tab_analyst:
     st.markdown("<div class='section-header'>🔍 Analyst Masterclass</div>", unsafe_allow_html=True)
     mode = st.radio("Mode:", ["🧠 Deep Dive", "⚡ Screener"], horizontal=True)
@@ -412,11 +406,10 @@ with tab_analyst:
             if info and not hist.empty:
                 st.metric(info.get('shortName', ticker), f"{hist['Close'].iloc[-1]:.2f}")
                 
-                # CHART (Restored from V16)
                 st.subheader("Price Action")
                 fig = go.Figure(data=[go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'])])
                 fig.update_layout(height=400, template="plotly_dark", xaxis_rangeslider_visible=False)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, key="analyst_chart") # Unique Key
                 st.divider()
 
                 if view_type == "Strategy Scorecards":
@@ -424,7 +417,6 @@ with tab_analyst:
                     
                     def get_val(k, d=0): return safe_float(info.get(k, d))
 
-                    # (V16 Strategy Logic Preserved)
                     if strat == "🚀 CAN SLIM":
                         c1, c2 = st.columns(2)
                         eps = get_val('earningsGrowth')
@@ -451,7 +443,6 @@ with tab_analyst:
                             st.markdown("**📦 Product & Brand**")
                             render_news(fetch_feed_parallel([get_google_rss(f"{info.get('shortName', ticker)} reviews complaints")]))
 
-                    # "Why is it moving?" (Added feature)
                     st.divider()
                     st.subheader("📉 Why is the stock moving?")
                     render_news(fetch_feed_parallel([get_google_rss(f"{info.get('shortName', ticker)} share price reason analysis")]))
