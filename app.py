@@ -10,9 +10,17 @@ import os
 import concurrent.futures
 import time
 import pytz
+import nltk
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
+
+# --- NLTK SETUP (Auto-Download) ---
+try:
+    nltk.data.find('vader_lexicon')
+except LookupError:
+    nltk.download('vader_lexicon')
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Executive Market Radar 19.1", layout="wide", page_icon="🦅")
+st.set_page_config(page_title="Executive Market Radar 19.2", layout="wide", page_icon="🦅")
 WATCHLIST_FILE = "watchlist_data.json"
 TRADING_FILE = "trading_engine.json"
 TRANSACTION_FILE = "transactions.json"
@@ -44,10 +52,11 @@ st.markdown("""
     .verdict-pass { background-color: rgba(76, 175, 80, 0.1); color: #4CAF50; border: 1px solid #4CAF50; padding: 5px 10px; border-radius: 5px; text-align: center; font-weight: bold; }
     .verdict-fail { background-color: rgba(244, 67, 54, 0.1); color: #FF5252; border: 1px solid #FF5252; padding: 5px 10px; border-radius: 5px; text-align: center; font-weight: bold; }
     
-    /* News */
+    /* News & Sentiment */
     .news-card { border-left: 3px solid #4CAF50; background-color: #262730; padding: 12px; margin-bottom: 10px; border-radius: 6px; transition: 0.3s; }
     .news-card:hover { background-color: #2E303A; }
     .news-title { font-size: 15px; font-weight: 600; color: #E0E0E0; text-decoration: none; }
+    .sentiment-box { padding: 15px; border-radius: 8px; text-align: center; font-weight: bold; margin-bottom: 15px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -78,22 +87,18 @@ def safe_float(val):
     try: return float(val) if val is not None else 0.0
     except: return 0.0
 
-# [FEATURE 11] DYNAMIC SURVIVOR BIAS AVOIDANCE
-@st.cache_data(ttl=86400) # Cache for 24 hours
+@st.cache_data(ttl=86400)
 def get_nifty50_tickers():
     fallback_list = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", "BHARTIARTL.NS", "ITC.NS", "SBIN.NS", "LICI.NS", "HINDUNILVR.NS"]
     try:
-        # Scrape Wikipedia for the current list
         url = "https://en.wikipedia.org/wiki/NIFTY_50"
         tables = pd.read_html(url)
-        # Find the table with 'Symbol' column
         for table in tables:
             if 'Symbol' in table.columns:
-                # Extract and clean symbols
                 symbols = table['Symbol'].tolist()
                 return [f"{s}.NS" for s in symbols]
         return fallback_list
-    except Exception as e:
+    except:
         return fallback_list
 
 @st.cache_data(ttl=600)
@@ -111,11 +116,8 @@ def get_yield_curve_data():
 
 @st.cache_data(ttl=300)
 def get_market_movers_india():
-    # Use Dynamic List instead of Hardcoded
     tickers = get_nifty50_tickers()
-    # Limit to top 15 by weight approximation or just process all (taking 20 random for speed if list is full 50)
-    # For performance in this demo, we'll slice the top 20 of the list (usually sorted by market cap on Wiki)
-    target_tickers = tickers[:20]
+    target_tickers = tickers[:20] # Limit for speed
     
     def fetch_change(t):
         try:
@@ -154,7 +156,6 @@ def get_screener_data(tickers):
         results = list(executor.map(fetch_metrics, tickers))
     return [r for r in results if r]
 
-# [FEATURE 10] DATA FRESHNESS INDICATOR logic inside fetch
 @st.cache_data(ttl=300)
 def get_ticker_data_parallel(tickers):
     def fetch(t):
@@ -163,13 +164,11 @@ def get_ticker_data_parallel(tickers):
             h = s.history(period="5d", interval="1d")
             if len(h) > 1:
                 last_time = h.index[-1]
-                # Ensure last_time is timezone-aware for comparison
                 if last_time.tzinfo is None:
                     last_time = last_time.replace(tzinfo=pytz.UTC)
                 
-                # Check latency (Is data older than 15 mins?)
                 now = datetime.now(pytz.UTC)
-                is_stale = (now - last_time).total_seconds() > 1800 # 30 mins grace for close market
+                is_stale = (now - last_time).total_seconds() > 1800 
                 
                 return {
                     "symbol": t, 
@@ -211,14 +210,54 @@ def fetch_feed_parallel(url_list):
 def get_deep_company_data(ticker):
     try:
         s = yf.Ticker(ticker)
-        return s.info, s.history(period="1y"), s.financials, s.balance_sheet, s.cashflow
-    except: return None, None, None, None, None
+        return s.info, s.history(period="1y"), s.financials, s.balance_sheet, s.cashflow, s.major_holders, s.institutional_holders
+    except: return None, None, None, None, None, None, None
+
+# --- FEATURE 19.2 AI ENGINES ---
+
+# 1. SENTIMENT ENGINE (NLTK VADER)
+@st.cache_data(ttl=3600)
+def analyze_sentiment_vader(ticker):
+    try:
+        t = yf.Ticker(ticker)
+        news = t.news
+        if not news: return 0, "Neutral"
+        
+        sia = SentimentIntensityAnalyzer()
+        scores = []
+        for n in news:
+            if 'title' in n:
+                scores.append(sia.polarity_scores(n['title'])['compound'])
+        
+        if not scores: return 0, "Neutral"
+        
+        avg_score = sum(scores) / len(scores)
+        
+        if avg_score >= 0.05: verdict = "Bullish"
+        elif avg_score <= -0.05: verdict = "Bearish"
+        else: verdict = "Neutral"
+        
+        return avg_score, verdict
+    except: return 0, "Neutral"
+
+# 3. PEER WAR ROOM ENGINE
+@st.cache_data(ttl=3600)
+def get_peer_comparison_data(main_ticker, peers):
+    data_map = {}
+    try:
+        tickers = [main_ticker] + peers
+        # Download batch data for 6 months
+        df = yf.download(tickers, period="6mo")['Close']
+        
+        # Normalize: (Price / Start_Price) * 100
+        normalized = df.div(df.iloc[0]).mul(100)
+        return normalized
+    except: return pd.DataFrame()
 
 # --- RENDERERS ---
 
 def render_freshness_badge(data_list):
     if not data_list: return
-    # Check if ANY major ticker in the batch is stale
     stale_count = sum(1 for d in data_list if d.get('is_stale', False))
     if stale_count > 0:
         st.markdown(f"<span class='badge-delayed'>⚠️ DELAYED DATA ({stale_count})</span>", unsafe_allow_html=True)
@@ -268,8 +307,8 @@ def render_news(news):
 # --- APP LAYOUT ---
 c_title, c_badge = st.columns([4,1])
 with c_title:
-    st.title("🦅 Executive Market Radar 19.1")
-    st.caption("Strategic Intelligence | Auto-Audit & Currency Normalization Enabled")
+    st.title("🦅 Executive Market Radar 19.2")
+    st.caption("Strategic Intelligence | Auto-Audit | AI Sentiment | Smart Money Radar")
 
 tab_india, tab_global, tab_ceo, tab_trade, tab_analyst = st.tabs([
     "🇮🇳 India", "🌎 Global", "🏛️ CEO Radar", "📈 Trading Floor", "🧠 Analyst Lab"
@@ -280,19 +319,14 @@ with tab_india:
     st.markdown("<div class='section-header'>📊 Market Pulse</div>", unsafe_allow_html=True)
     tickers = ["^NSEI", "^BSESN", "^NSEBANK", "GC=F", "SI=F", "CL=F"] 
     data = get_ticker_data_parallel(tickers)
-    
-    # Render Freshness Badge in the top right based on Pulse Data
     with c_badge: render_freshness_badge(data)
-    
     label_map = {"GC=F": "GOLD", "SI=F": "SILVER", "CL=F": "CRUDE OIL", "^NSEI": "NIFTY 50", "^BSESN": "SENSEX"}
     if data:
         for d in data: d['symbol'] = label_map.get(d['symbol'], d['symbol'])
         render_pro_metrics(data, key_prefix="ind_pulse")
-
     if st.session_state.watchlist["india"]: 
         st.subheader("⭐ Watchlist")
         render_pro_metrics(get_ticker_data_parallel(st.session_state.watchlist["india"]), key_prefix="ind_watch")
-    
     st.divider()
     c1, c2, c3 = st.columns(3)
     with c1: st.markdown("**🚀 Growth & Tech**"); render_news(fetch_feed_parallel([get_google_rss("Indian Startup Funding"), get_google_rss("Nifty IT News")]))
@@ -308,11 +342,9 @@ with tab_global:
     if data:
         for d in data: d['symbol'] = label_map_gl.get(d['symbol'], d['symbol'])
         render_pro_metrics(data, key_prefix="gl_pulse")
-    
     if st.session_state.watchlist["global"]:
         st.subheader("⭐ Watchlist")
         render_pro_metrics(get_ticker_data_parallel(st.session_state.watchlist["global"]), key_prefix="gl_watch")
-
     st.divider()
     c1, c2 = st.columns(2)
     with c1: st.markdown("**🇺🇸 Wall St & Fed**"); render_news(fetch_feed_parallel([get_google_rss("Federal Reserve News"), get_google_rss("Wall Street Market Analysis")]))
@@ -321,7 +353,6 @@ with tab_global:
 # --- TAB 3: CEO RADAR ---
 with tab_ceo:
     st.markdown("<div class='section-header'>🏛️ Strategic Situation Room</div>", unsafe_allow_html=True)
-    
     c_yield, c_pulse = st.columns([2, 1])
     with c_yield:
         st.subheader("⚠️ US Yield Curve (Recession Watch)")
@@ -330,7 +361,6 @@ with tab_ceo:
             fig = go.Figure(go.Scatter(x=labels, y=values, mode='lines+markers', line=dict(color='#FFA726', width=4)))
             fig.update_layout(height=250, title="Yield Curve", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', yaxis_title="Yield %")
             st.plotly_chart(fig, use_container_width=True, key="yield_chart")
-    
     with c_pulse:
         st.subheader("🏗️ Economic Pulse")
         rd = get_ticker_data_parallel(["USDINR=X", "DX-Y.NYB", "^TNX"])
@@ -342,10 +372,7 @@ with tab_ceo:
             with t2:
                 if "DX-Y.NYB" in pmap: st.metric("Dollar Index", f"{pmap['DX-Y.NYB']:.2f}")
                 if "^TNX" in pmap: st.metric("US 10Y Yield", f"{pmap['^TNX']:.2f}%")
-
     st.divider()
-    
-    # [FEATURE 11] Using Dynamic List
     st.subheader("🏆 Market Movers (Dynamic Nifty 50)")
     movers = get_market_movers_india()
     if movers:
@@ -358,9 +385,7 @@ with tab_ceo:
         with l:
             st.error("Top Losers")
             for m in losers: st.markdown(f"**{m['Symbol']}**: {m['Change']:.2f}%")
-            
     st.divider()
-    
     st.subheader("🔥 Sector Performance")
     def plot_treemap(sector_dict, title):
         sd = get_ticker_data_parallel(list(sector_dict.values()))
@@ -370,7 +395,6 @@ with tab_ceo:
             fig.update_layout(height=300, margin=dict(t=30,b=0,l=0,r=0), title=title)
             return fig
         return None
-    
     h1, h2 = st.columns(2)
     with h1: 
         f = plot_treemap({"Banks": "^NSEBANK", "IT": "^CNXIT", "Auto": "^CNXAUTO", "Energy": "^CNXENERGY"}, "India Sectors")
@@ -383,38 +407,22 @@ with tab_ceo:
 with tab_trade:
     if 'trading' in st.session_state:
         st.markdown("<div class='section-header'>📈 Virtual Exchange</div>", unsafe_allow_html=True)
-        
-        # [FEATURE 12] Currency Normalization
-        # Fetch Live USD/INR Rate
         fx_data = get_ticker_data_parallel(["USDINR=X"])
         usd_inr_rate = fx_data[0]['price'] if fx_data else 84.0
-        
         mkt = st.radio("Market", ["🇮🇳 India", "🇺🇸 Global"], horizontal=True)
         m_key = "india" if "India" in mkt else "global"
         curr = "₹" if "India" in mkt else "$"
         port = st.session_state.trading[m_key]
-        
-        # Portfolio Calculation
-        current_holdings_val = 0.0
-        # Calculate current value of holdings (Requires live price fetch for accuracy, simplified here to cost for speed, 
-        # but for Total Net Worth we can use cash + simple sum)
-        
         c1, c2, c3 = st.columns(3)
         c1.metric(f"Cash Available ({curr})", f"{curr}{port['cash']:,.0f}")
-        
-        # Unified Net Worth Display
-        ind_val = st.session_state.trading['india']['cash'] # + holdings value (omitted for brevity)
-        gl_val_usd = st.session_state.trading['global']['cash'] # + holdings value
+        ind_val = st.session_state.trading['india']['cash'] 
+        gl_val_usd = st.session_state.trading['global']['cash'] 
         gl_val_inr = gl_val_usd * usd_inr_rate
         total_nw_inr = ind_val + gl_val_inr
-        
-        with c2:
-            st.metric("Total Net Worth (Unified)", f"₹{total_nw_inr:,.0f}", help=f"Combined India + Global (Converted @ ₹{usd_inr_rate:.2f})")
-        
+        with c2: st.metric("Total Net Worth (Unified)", f"₹{total_nw_inr:,.0f}", help=f"Combined India + Global (Converted @ ₹{usd_inr_rate:.2f})")
         t_sym = st.text_input("Trade Ticker (e.g., ZOMATO)", "RELIANCE").upper()
         if m_key == "india" and not t_sym.endswith(".NS") and len(t_sym) > 0: final_ticker = f"{t_sym}.NS"
         else: final_ticker = t_sym
-
         if final_ticker:
             d = get_ticker_data_parallel([final_ticker])
             if d:
@@ -423,7 +431,6 @@ with tab_trade:
                 c_act, c_qty, c_btn = st.columns([1,1,1])
                 act = c_act.selectbox("Action", ["BUY", "SELL"])
                 qty = c_qty.number_input("Qty", 1, 10000)
-                
                 if c_btn.button("EXECUTE"):
                     val = lp * qty
                     fee = val * 0.001
@@ -438,8 +445,7 @@ with tab_trade:
                             else:
                                 port['holdings'][final_ticker] = {'qty': qty, 'avg_price': lp}
                             st.success("Bought!")
-                            save_json(TRADING_FILE, st.session_state.trading)
-                            st.rerun()
+                            save_json(TRADING_FILE, st.session_state.trading); st.rerun()
                         else: st.error("No Funds")
                     elif act == "SELL":
                         if final_ticker in port['holdings'] and port['holdings'][final_ticker]['qty'] >= qty:
@@ -447,45 +453,100 @@ with tab_trade:
                             port['holdings'][final_ticker]['qty'] -= qty
                             if port['holdings'][final_ticker]['qty'] == 0: del port['holdings'][final_ticker]
                             st.success("Sold!")
-                            save_json(TRADING_FILE, st.session_state.trading)
-                            st.rerun()
+                            save_json(TRADING_FILE, st.session_state.trading); st.rerun()
                         else: st.error("No Shares")
             elif t_sym: st.caption("Searching...")
-
         st.subheader("Holdings")
         if port['holdings']:
             st.dataframe(pd.DataFrame([{"Ticker": k, "Qty": v['qty'], "Avg": f"{curr}{v['avg_price']:.2f}"} for k,v in port['holdings'].items()]), use_container_width=True)
 
-# --- TAB 5: ANALYST LAB ---
+# --- TAB 5: ANALYST LAB (UPGRADED 19.2) ---
 with tab_analyst:
-    st.markdown("<div class='section-header'>🔍 Analyst Masterclass</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-header'>🧠 Analyst Lab 19.2 (AI Enabled)</div>", unsafe_allow_html=True)
     mode = st.radio("Mode:", ["🧠 Deep Dive", "⚡ Screener"], horizontal=True)
     
     if mode == "⚡ Screener":
         st.subheader("⚡ Live Screener (Dynamic Nifty 50)")
         if st.button("Run Scan"):
-            # Use Dynamic List Here too
-            scan_list = get_nifty50_tickers()[:30] # Limit to 30 for speed
+            scan_list = get_nifty50_tickers()[:30] 
             res = get_screener_data(scan_list)
             if res: st.dataframe(pd.DataFrame(res).style.format({"Price": "{:.2f}"}), use_container_width=True)
             
     else:
         c_in, c_view = st.columns([2, 1])
         with c_in: ticker = st.text_input("Analyze Ticker:", "RELIANCE.NS").upper()
-        with c_view: view_type = st.selectbox("View:", ["Strategy Scorecards", "Deep Financials"])
+        with c_view: view_type = st.selectbox("View:", ["Strategy Scorecards", "Deep Financials", "AI Sentiment & Peers"])
         
         if ticker:
-            info, hist, fin, bal, cash = get_deep_company_data(ticker)
+            info, hist, fin, bal, cash, major_holders, inst_holders = get_deep_company_data(ticker)
             if info and not hist.empty:
                 st.metric(info.get('shortName', ticker), f"{hist['Close'].iloc[-1]:.2f}")
                 
-                st.subheader("Price Action")
-                fig = go.Figure(data=[go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'])])
-                fig.update_layout(height=400, template="plotly_dark", xaxis_rangeslider_visible=False)
-                st.plotly_chart(fig, use_container_width=True, key="analyst_chart") # Unique Key
-                st.divider()
+                # --- FEATURE 19.2: PEER WAR ROOM (Moved Chart Here for Context) ---
+                if view_type == "AI Sentiment & Peers":
+                    st.subheader("⚔️ Peer War Room (Normalized Returns 6Mo)")
+                    # Basic Sector Mapping for Demonstration
+                    sector_peers = {
+                        "RELIANCE.NS": ["ONGC.NS", "ADANIENT.NS"],
+                        "TCS.NS": ["INFY.NS", "HCLTECH.NS", "WIPRO.NS"],
+                        "HDFCBANK.NS": ["ICICIBANK.NS", "SBIN.NS", "KOTAKBANK.NS"],
+                        "INFY.NS": ["TCS.NS", "HCLTECH.NS"],
+                        "ITC.NS": ["HINDUNILVR.NS", "NESTLEIND.NS"]
+                    }
+                    peers = sector_peers.get(ticker, [])
+                    if peers:
+                        peer_df = get_peer_comparison_data(ticker, peers)
+                        if not peer_df.empty:
+                            st.line_chart(peer_df)
+                            st.caption("All stocks normalized to 100 base. >100 = Profit, <100 = Loss.")
+                    else:
+                        st.info("No automatic peer map found for this ticker. (Currently mapped: Reliance, TCS, HDFC, Infy, ITC)")
 
-                if view_type == "Strategy Scorecards":
+                    st.divider()
+
+                    # --- FEATURE 19.2: SENTIMENT & SMART MONEY ---
+                    c_sent, c_money = st.columns(2)
+                    
+                    with c_sent:
+                        st.subheader("🤖 AI Sentiment Engine")
+                        score, verdict = analyze_sentiment_vader(ticker)
+                        color = "#00C805" if score > 0 else "#FF3B30"
+                        st.markdown(f"""
+                        <div class='sentiment-box' style='background-color: {color}20; border: 1px solid {color};'>
+                            <div style='font-size: 24px; color: {color};'>{verdict.upper()}</div>
+                            <div style='font-size: 14px;'>News Sentiment Score: {score:.2f}</div>
+                            <div style='font-size: 10px; color: #888;'>(Scale: -1.0 to +1.0)</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        st.markdown("**Latest Headlines Analyzed:**")
+                        t_obj = yf.Ticker(ticker)
+                        if t_obj.news:
+                            for n in t_obj.news[:3]:
+                                st.caption(f"• {n.get('title', 'No Title')}")
+                        else: st.caption("No recent news found on YFinance.")
+
+                    with c_money:
+                        st.subheader("🏦 Smart Money Radar")
+                        if major_holders is not None:
+                            # Clean up holder data if possible, usually it's a DF with 0 and 1 cols
+                            try:
+                                major_holders.columns = ["Percentage", "Category"]
+                                st.dataframe(major_holders, use_container_width=True, hide_index=True)
+                            except:
+                                st.dataframe(major_holders, use_container_width=True)
+                        else:
+                            st.warning("Insider data not available.")
+                        
+                        if inst_holders is not None:
+                            st.markdown("**Top Institutional Holders**")
+                            st.dataframe(inst_holders.head(5), use_container_width=True)
+
+                elif view_type == "Strategy Scorecards":
+                    st.subheader("Price Action")
+                    fig = go.Figure(data=[go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'])])
+                    fig.update_layout(height=400, template="plotly_dark", xaxis_rangeslider_visible=False)
+                    st.plotly_chart(fig, use_container_width=True, key="analyst_chart") 
+                    
                     strat = st.selectbox("Framework:", ["🚀 CAN SLIM", "🪄 Magic Formula", "🏰 MOAT", "🏦 CAMELS (Bank)", "🏇 Jockey (Mgmt)", "🕵️ Scuttlebutt"])
                     
                     def get_val(k, d=0): return safe_float(info.get(k, d))
@@ -515,10 +576,6 @@ with tab_analyst:
                         with c3:
                             st.markdown("**📦 Product & Brand**")
                             render_news(fetch_feed_parallel([get_google_rss(f"{info.get('shortName', ticker)} reviews complaints")]))
-
-                    st.divider()
-                    st.subheader("📉 Why is the stock moving?")
-                    render_news(fetch_feed_parallel([get_google_rss(f"{info.get('shortName', ticker)} share price reason analysis")]))
 
                 elif view_type == "Deep Financials":
                     st.subheader("📑 Statements (In Crores)")
