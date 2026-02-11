@@ -21,7 +21,7 @@ except LookupError:
     nltk.download('vader_lexicon')
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Executive Market Radar 19.3", layout="wide", page_icon="🦅")
+st.set_page_config(page_title="Executive Market Radar 19.3.1", layout="wide", page_icon="🦅")
 WATCHLIST_FILE = "watchlist_data.json"
 TRADING_FILE = "trading_engine.json"
 TRANSACTION_FILE = "transactions.json"
@@ -90,7 +90,15 @@ def safe_float(val):
 
 @st.cache_data(ttl=86400)
 def get_nifty50_tickers():
-    fallback_list = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", "BHARTIARTL.NS", "ITC.NS", "SBIN.NS", "LICI.NS", "HINDUNILVR.NS"]
+    # EXPANDED FALLBACK LIST (30 Stocks) for better "Safe Mode" visualization
+    fallback_list = [
+        "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", 
+        "BHARTIARTL.NS", "ITC.NS", "SBIN.NS", "LICI.NS", "HINDUNILVR.NS",
+        "LT.NS", "BAJFINANCE.NS", "HCLTECH.NS", "MARUTI.NS", "SUNPHARMA.NS",
+        "ADANIENT.NS", "TITAN.NS", "KOTAKBANK.NS", "ONGC.NS", "TATAMOTORS.NS",
+        "NTPC.NS", "AXISBANK.NS", "ULTRACEMCO.NS", "POWERGRID.NS", "WIPRO.NS",
+        "M&M.NS", "BAJAJFINSV.NS", "NESTLEIND.NS", "COALINDIA.NS", "JSWSTEEL.NS"
+    ]
     try:
         url = "https://en.wikipedia.org/wiki/NIFTY_50"
         tables = pd.read_html(url)
@@ -240,11 +248,11 @@ def get_peer_comparison_data(main_ticker, peers):
         return normalized
     except: return pd.DataFrame()
 
-# --- MARKET X-RAY ENGINES (NEW 19.3) ---
+# --- MARKET X-RAY ENGINES (Fixed 19.3.1) ---
 
 @st.cache_data(ttl=1800)
 def get_sector_rotation_map():
-    # 1. Define Sectors
+    # UPDATED: Using robust set of Sector Indices
     sectors = {
         "Auto": "^CNXAUTO", "Bank": "^NSEBANK", "Energy": "^CNXENERGY", 
         "FMCG": "^CNXFMCG", "IT": "^CNXIT", "Metal": "^CNXMETAL", 
@@ -252,10 +260,13 @@ def get_sector_rotation_map():
     }
     
     try:
-        # 2. Fetch Data (Benchmark + Sectors)
+        # Fetch Data with auto_adjust=True for better consistency
         tickers = list(sectors.values()) + ["^NSEI"]
-        data = yf.download(tickers, period="6mo")['Close']
+        data = yf.download(tickers, period="6mo", auto_adjust=True)['Close']
         
+        if data.empty or "^NSEI" not in data.columns:
+            return pd.DataFrame()
+
         rrg_data = []
         nifty = data["^NSEI"]
         
@@ -263,42 +274,46 @@ def get_sector_rotation_map():
             if ticker in data.columns:
                 sector_price = data[ticker]
                 
-                # 3. Calculate Relative Strength (RS) Ratio
-                # RS = Sector / Nifty
-                rs_raw = sector_price / nifty
+                # Combine and drop NaNs to avoid calculation errors
+                valid_df = pd.concat([sector_price, nifty], axis=1).dropna()
                 
-                # 4. Calculate Indicators for RRG Proxy
-                # X-Axis: Relative Trend (Current RS vs 3-month RS avg) -> Z-Score proxy
-                # Simple Proxy: 3-Month Relative Return
-                
-                # Current RS Ratio
-                curr_rs = rs_raw.iloc[-1]
-                
-                # Momentum (ROC of RS over last 20 days)
-                rs_mom = ((rs_raw.iloc[-1] - rs_raw.iloc[-20]) / rs_raw.iloc[-20]) * 100
-                
-                # Relative Trend (Distance from 60-day moving average of RS)
-                rs_ma60 = rs_raw.rolling(window=60).mean().iloc[-1]
-                rs_trend = ((curr_rs - rs_ma60) / rs_ma60) * 100
-                
-                rrg_data.append({
-                    "Sector": name,
-                    "RS_Trend": rs_trend,   # X-Axis
-                    "RS_Momentum": rs_mom   # Y-Axis
-                })
+                if len(valid_df) > 20: # Ensure enough history
+                    s_price = valid_df[ticker]
+                    n_price = valid_df["^NSEI"]
+                    
+                    # RS Calculation
+                    rs_raw = s_price / n_price
+                    curr_rs = rs_raw.iloc[-1]
+                    
+                    # Momentum (ROC of RS over last 20 days)
+                    rs_mom = ((rs_raw.iloc[-1] - rs_raw.iloc[-20]) / rs_raw.iloc[-20]) * 100
+                    
+                    # Relative Trend (Distance from 60-day MA)
+                    rs_ma60 = rs_raw.rolling(window=60).mean().iloc[-1]
+                    if pd.notna(rs_ma60) and rs_ma60 != 0:
+                        rs_trend = ((curr_rs - rs_ma60) / rs_ma60) * 100
+                        
+                        rrg_data.append({
+                            "Sector": name,
+                            "RS_Trend": rs_trend,   # X-Axis
+                            "RS_Momentum": rs_mom   # Y-Axis
+                        })
                 
         return pd.DataFrame(rrg_data)
     except Exception as e:
-        print(e)
         return pd.DataFrame()
 
 @st.cache_data(ttl=600)
 def get_market_breadth():
     try:
         tickers = get_nifty50_tickers()
-        # Sample top 30 for speed if needed, or full 50
-        data = yf.download(tickers, period="2d")['Close']
+        # Limit to 30 to prevent timeouts, but use fallback list if Wiki fails
+        scan_list = tickers[:30]
+        data = yf.download(scan_list, period="2d", auto_adjust=True)['Close']
         
+        if data.empty: return 0, 0, 0.5
+        
+        # Calculate moves based on available columns
         advances = 0
         declines = 0
         
@@ -378,7 +393,7 @@ def render_news(news):
 # --- APP LAYOUT ---
 c_title, c_badge = st.columns([4,1])
 with c_title:
-    st.title("🦅 Executive Market Radar 19.3")
+    st.title("🦅 Executive Market Radar 19.3.1")
     st.caption("Strategic Intelligence | AI Sentiment | Smart Money | Market X-Ray")
 
 tab_india, tab_global, tab_xray, tab_ceo, tab_trade, tab_analyst = st.tabs([
@@ -421,7 +436,7 @@ with tab_global:
     with c1: st.markdown("**🇺🇸 Wall St & Fed**"); render_news(fetch_feed_parallel([get_google_rss("Federal Reserve News"), get_google_rss("Wall Street Market Analysis")]))
     with c2: st.markdown("**🌏 Geopolitics & Energy**"); render_news(fetch_feed_parallel([get_google_rss("Global Oil Prices OPEC"), get_google_rss("China Economy News")]))
 
-# --- TAB 3: MARKET X-RAY (NEW 19.3) ---
+# --- TAB 3: MARKET X-RAY (FIXED 19.3.1) ---
 with tab_xray:
     st.markdown("<div class='section-header'>🩻 Market X-Ray (Hidden Signals)</div>", unsafe_allow_html=True)
     
@@ -448,7 +463,7 @@ with tab_xray:
         fig_rrg.update_layout(height=500, template="plotly_dark")
         st.plotly_chart(fig_rrg, use_container_width=True)
     else:
-        st.warning("Insufficient data to generate Sector Map. Try again during market hours.")
+        st.warning("⚠️ Data Unavailable: Yahoo Finance sector indices are currently non-responsive. Please try again later during market hours.")
 
     st.divider()
 
@@ -477,7 +492,7 @@ with tab_xray:
         fig_gauge.update_layout(height=300, margin=dict(t=50,b=10,l=30,r=30), paper_bgcolor='rgba(0,0,0,0)', font={'color': "white"})
         st.plotly_chart(fig_gauge, use_container_width=True)
         
-        st.markdown(f"**Advances:** {adv} | **Declines:** {dec}")
+        st.markdown(f"**Advances:** {adv} | **Declines:** {dec} (Sample: {adv+dec} Stocks)")
         if ratio < 0.4: st.error("⚠️ Warning: Weak Breadth (Narrow Rally or Broad Selloff)")
         elif ratio > 0.6: st.success("✅ Strong Breadth (Healthy Rally)")
         else: st.info("⚖️ Neutral Market Breadth")
@@ -621,7 +636,7 @@ with tab_trade:
 
 # --- TAB 6: ANALYST LAB ---
 with tab_analyst:
-    st.markdown("<div class='section-header'>🧠 Analyst Lab 19.3</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-header'>🧠 Analyst Lab 19.3.1</div>", unsafe_allow_html=True)
     mode = st.radio("Mode:", ["🧠 Deep Dive", "⚡ Screener"], horizontal=True)
     
     if mode == "⚡ Screener":
