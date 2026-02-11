@@ -12,6 +12,7 @@ import time
 import pytz
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
+from scipy import stats
 
 # --- NLTK SETUP (Auto-Download) ---
 try:
@@ -20,7 +21,7 @@ except LookupError:
     nltk.download('vader_lexicon')
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Executive Market Radar 19.2", layout="wide", page_icon="🦅")
+st.set_page_config(page_title="Executive Market Radar 19.3", layout="wide", page_icon="🦅")
 WATCHLIST_FILE = "watchlist_data.json"
 TRADING_FILE = "trading_engine.json"
 TRANSACTION_FILE = "transactions.json"
@@ -117,7 +118,7 @@ def get_yield_curve_data():
 @st.cache_data(ttl=300)
 def get_market_movers_india():
     tickers = get_nifty50_tickers()
-    target_tickers = tickers[:20] # Limit for speed
+    target_tickers = tickers[:20] 
     
     def fetch_change(t):
         try:
@@ -213,46 +214,116 @@ def get_deep_company_data(ticker):
         return s.info, s.history(period="1y"), s.financials, s.balance_sheet, s.cashflow, s.major_holders, s.institutional_holders
     except: return None, None, None, None, None, None, None
 
-# --- FEATURE 19.2 AI ENGINES ---
-
-# 1. SENTIMENT ENGINE (NLTK VADER)
+# --- AI & SENTIMENT ENGINES ---
 @st.cache_data(ttl=3600)
 def analyze_sentiment_vader(ticker):
     try:
         t = yf.Ticker(ticker)
         news = t.news
         if not news: return 0, "Neutral"
-        
         sia = SentimentIntensityAnalyzer()
-        scores = []
-        for n in news:
-            if 'title' in n:
-                scores.append(sia.polarity_scores(n['title'])['compound'])
-        
+        scores = [sia.polarity_scores(n['title'])['compound'] for n in news if 'title' in n]
         if not scores: return 0, "Neutral"
-        
         avg_score = sum(scores) / len(scores)
-        
         if avg_score >= 0.05: verdict = "Bullish"
         elif avg_score <= -0.05: verdict = "Bearish"
         else: verdict = "Neutral"
-        
         return avg_score, verdict
     except: return 0, "Neutral"
 
-# 3. PEER WAR ROOM ENGINE
 @st.cache_data(ttl=3600)
 def get_peer_comparison_data(main_ticker, peers):
-    data_map = {}
     try:
         tickers = [main_ticker] + peers
-        # Download batch data for 6 months
         df = yf.download(tickers, period="6mo")['Close']
-        
-        # Normalize: (Price / Start_Price) * 100
         normalized = df.div(df.iloc[0]).mul(100)
         return normalized
     except: return pd.DataFrame()
+
+# --- MARKET X-RAY ENGINES (NEW 19.3) ---
+
+@st.cache_data(ttl=1800)
+def get_sector_rotation_map():
+    # 1. Define Sectors
+    sectors = {
+        "Auto": "^CNXAUTO", "Bank": "^NSEBANK", "Energy": "^CNXENERGY", 
+        "FMCG": "^CNXFMCG", "IT": "^CNXIT", "Metal": "^CNXMETAL", 
+        "Pharma": "^CNXPHARMA", "Realty": "^CNXREALTY"
+    }
+    
+    try:
+        # 2. Fetch Data (Benchmark + Sectors)
+        tickers = list(sectors.values()) + ["^NSEI"]
+        data = yf.download(tickers, period="6mo")['Close']
+        
+        rrg_data = []
+        nifty = data["^NSEI"]
+        
+        for name, ticker in sectors.items():
+            if ticker in data.columns:
+                sector_price = data[ticker]
+                
+                # 3. Calculate Relative Strength (RS) Ratio
+                # RS = Sector / Nifty
+                rs_raw = sector_price / nifty
+                
+                # 4. Calculate Indicators for RRG Proxy
+                # X-Axis: Relative Trend (Current RS vs 3-month RS avg) -> Z-Score proxy
+                # Simple Proxy: 3-Month Relative Return
+                
+                # Current RS Ratio
+                curr_rs = rs_raw.iloc[-1]
+                
+                # Momentum (ROC of RS over last 20 days)
+                rs_mom = ((rs_raw.iloc[-1] - rs_raw.iloc[-20]) / rs_raw.iloc[-20]) * 100
+                
+                # Relative Trend (Distance from 60-day moving average of RS)
+                rs_ma60 = rs_raw.rolling(window=60).mean().iloc[-1]
+                rs_trend = ((curr_rs - rs_ma60) / rs_ma60) * 100
+                
+                rrg_data.append({
+                    "Sector": name,
+                    "RS_Trend": rs_trend,   # X-Axis
+                    "RS_Momentum": rs_mom   # Y-Axis
+                })
+                
+        return pd.DataFrame(rrg_data)
+    except Exception as e:
+        print(e)
+        return pd.DataFrame()
+
+@st.cache_data(ttl=600)
+def get_market_breadth():
+    try:
+        tickers = get_nifty50_tickers()
+        # Sample top 30 for speed if needed, or full 50
+        data = yf.download(tickers, period="2d")['Close']
+        
+        advances = 0
+        declines = 0
+        
+        if len(data) >= 2:
+            current = data.iloc[-1]
+            prev = data.iloc[-2]
+            diff = current - prev
+            
+            advances = (diff > 0).sum()
+            declines = (diff < 0).sum()
+            
+        total = advances + declines
+        ratio = advances / total if total > 0 else 0.5
+        
+        return advances, declines, ratio
+    except: return 0, 0, 0.5
+
+@st.cache_data(ttl=600)
+def get_fear_greed_vix():
+    try:
+        vix = yf.Ticker("^INDIAVIX").history(period="1d")
+        if not vix.empty:
+            return vix['Close'].iloc[-1]
+        return 15.0 # Default fallback
+    except: return 15.0
 
 # --- RENDERERS ---
 
@@ -307,11 +378,11 @@ def render_news(news):
 # --- APP LAYOUT ---
 c_title, c_badge = st.columns([4,1])
 with c_title:
-    st.title("🦅 Executive Market Radar 19.2")
-    st.caption("Strategic Intelligence | Auto-Audit | AI Sentiment | Smart Money Radar")
+    st.title("🦅 Executive Market Radar 19.3")
+    st.caption("Strategic Intelligence | AI Sentiment | Smart Money | Market X-Ray")
 
-tab_india, tab_global, tab_ceo, tab_trade, tab_analyst = st.tabs([
-    "🇮🇳 India", "🌎 Global", "🏛️ CEO Radar", "📈 Trading Floor", "🧠 Analyst Lab"
+tab_india, tab_global, tab_xray, tab_ceo, tab_trade, tab_analyst = st.tabs([
+    "🇮🇳 India", "🌎 Global", "🩻 Market X-Ray", "🏛️ CEO Radar", "📈 Trading Floor", "🧠 Analyst Lab"
 ])
 
 # --- TAB 1: INDIA ---
@@ -350,7 +421,95 @@ with tab_global:
     with c1: st.markdown("**🇺🇸 Wall St & Fed**"); render_news(fetch_feed_parallel([get_google_rss("Federal Reserve News"), get_google_rss("Wall Street Market Analysis")]))
     with c2: st.markdown("**🌏 Geopolitics & Energy**"); render_news(fetch_feed_parallel([get_google_rss("Global Oil Prices OPEC"), get_google_rss("China Economy News")]))
 
-# --- TAB 3: CEO RADAR ---
+# --- TAB 3: MARKET X-RAY (NEW 19.3) ---
+with tab_xray:
+    st.markdown("<div class='section-header'>🩻 Market X-Ray (Hidden Signals)</div>", unsafe_allow_html=True)
+    
+    # ROW 1: Sector Rotation Map
+    st.subheader("1. 🔄 Sector Rotation Map (Smart Money Flow)")
+    st.caption("X-Axis: Relative Trend (Vs Nifty) | Y-Axis: Momentum (Speed). Top Right = Leaders.")
+    
+    rrg_df = get_sector_rotation_map()
+    if not rrg_df.empty:
+        fig_rrg = px.scatter(rrg_df, x="RS_Trend", y="RS_Momentum", text="Sector", 
+                             color="Sector", size=[10]*len(rrg_df),
+                             title="Sector Relative Strength & Momentum (RRG Proxy)")
+        
+        # Add Quadrant Lines
+        fig_rrg.add_hline(y=0, line_dash="dash", line_color="gray")
+        fig_rrg.add_vline(x=0, line_dash="dash", line_color="gray")
+        
+        # Annotations for Quadrants
+        fig_rrg.add_annotation(x=2, y=2, text="LEADING (Buy)", showarrow=False, font=dict(color="#00C805"))
+        fig_rrg.add_annotation(x=-2, y=-2, text="LAGGING (Avoid)", showarrow=False, font=dict(color="#FF3B30"))
+        fig_rrg.add_annotation(x=2, y=-2, text="WEAKENING", showarrow=False, font=dict(color="orange"))
+        fig_rrg.add_annotation(x=-2, y=2, text="IMPROVING", showarrow=False, font=dict(color="cyan"))
+        
+        fig_rrg.update_layout(height=500, template="plotly_dark")
+        st.plotly_chart(fig_rrg, use_container_width=True)
+    else:
+        st.warning("Insufficient data to generate Sector Map. Try again during market hours.")
+
+    st.divider()
+
+    # ROW 2: Truth Detector & Fear Gauge
+    c_truth, c_fear = st.columns(2)
+    
+    with c_truth:
+        st.subheader("2. 🕵️ The Truth Detector (Market Breadth)")
+        adv, dec, ratio = get_market_breadth()
+        
+        # Speedometer Gauge
+        fig_gauge = go.Figure(go.Indicator(
+            mode = "gauge+number",
+            value = ratio * 100,
+            title = {'text': "Advance-Decline Ratio (%)"},
+            gauge = {
+                'axis': {'range': [0, 100]},
+                'bar': {'color': "#00C805" if ratio > 0.5 else "#FF3B30"},
+                'steps': [
+                    {'range': [0, 40], 'color': "rgba(255, 59, 48, 0.3)"},
+                    {'range': [40, 60], 'color': "rgba(255, 255, 255, 0.1)"},
+                    {'range': [60, 100], 'color': "rgba(0, 200, 5, 0.3)"}
+                ],
+            }
+        ))
+        fig_gauge.update_layout(height=300, margin=dict(t=50,b=10,l=30,r=30), paper_bgcolor='rgba(0,0,0,0)', font={'color': "white"})
+        st.plotly_chart(fig_gauge, use_container_width=True)
+        
+        st.markdown(f"**Advances:** {adv} | **Declines:** {dec}")
+        if ratio < 0.4: st.error("⚠️ Warning: Weak Breadth (Narrow Rally or Broad Selloff)")
+        elif ratio > 0.6: st.success("✅ Strong Breadth (Healthy Rally)")
+        else: st.info("⚖️ Neutral Market Breadth")
+
+    with c_fear:
+        st.subheader("3. 🌡️ Fear & Greed Thermometer (India VIX)")
+        vix_val = get_fear_greed_vix()
+        
+        # Color Logic
+        if vix_val < 13: 
+            v_color = "#00C805" # Green (Complacency)
+            v_msg = "😎 COMPLACENCY (High Confidence)"
+        elif vix_val < 20: 
+            v_color = "#FFA726" # Orange (Normal)
+            v_msg = "😐 NORMAL MARKET (Standard Risk)"
+        else: 
+            v_color = "#FF3B30" # Red (Fear)
+            v_msg = "😱 HIGH FEAR (Crash Risk / Expensive Hedges)"
+
+        st.markdown(f"""
+        <div style="background-color: #262730; padding: 20px; border-radius: 10px; text-align: center;">
+            <div style="font-size: 48px; font-weight: bold; color: {v_color};">{vix_val:.2f}</div>
+            <div style="font-size: 18px; font-weight: bold; margin-top: 10px;">INDIA VIX</div>
+            <div style="margin-top: 20px; padding: 10px; background-color: {v_color}20; border: 1px solid {v_color}; border-radius: 5px;">
+                {v_msg}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.caption("• <13: Bullish but watch for reversals.\n• 13-20: Range-bound/Trending.\n• >20: High Volatility/Bearish pressure.")
+
+# --- TAB 4: CEO RADAR ---
 with tab_ceo:
     st.markdown("<div class='section-header'>🏛️ Strategic Situation Room</div>", unsafe_allow_html=True)
     c_yield, c_pulse = st.columns([2, 1])
@@ -403,7 +562,7 @@ with tab_ceo:
         f = plot_treemap({"Tech": "IXN", "Energy": "IXC", "Finance": "IXG"}, "Global Sectors")
         if f: st.plotly_chart(f, use_container_width=True, key="tree_gl")
 
-# --- TAB 4: TRADING FLOOR ---
+# --- TAB 5: TRADING FLOOR ---
 with tab_trade:
     if 'trading' in st.session_state:
         st.markdown("<div class='section-header'>📈 Virtual Exchange</div>", unsafe_allow_html=True)
@@ -460,9 +619,9 @@ with tab_trade:
         if port['holdings']:
             st.dataframe(pd.DataFrame([{"Ticker": k, "Qty": v['qty'], "Avg": f"{curr}{v['avg_price']:.2f}"} for k,v in port['holdings'].items()]), use_container_width=True)
 
-# --- TAB 5: ANALYST LAB (UPGRADED 19.2) ---
+# --- TAB 6: ANALYST LAB ---
 with tab_analyst:
-    st.markdown("<div class='section-header'>🧠 Analyst Lab 19.2 (AI Enabled)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-header'>🧠 Analyst Lab 19.3</div>", unsafe_allow_html=True)
     mode = st.radio("Mode:", ["🧠 Deep Dive", "⚡ Screener"], horizontal=True)
     
     if mode == "⚡ Screener":
@@ -482,10 +641,8 @@ with tab_analyst:
             if info and not hist.empty:
                 st.metric(info.get('shortName', ticker), f"{hist['Close'].iloc[-1]:.2f}")
                 
-                # --- FEATURE 19.2: PEER WAR ROOM (Moved Chart Here for Context) ---
                 if view_type == "AI Sentiment & Peers":
                     st.subheader("⚔️ Peer War Room (Normalized Returns 6Mo)")
-                    # Basic Sector Mapping for Demonstration
                     sector_peers = {
                         "RELIANCE.NS": ["ONGC.NS", "ADANIENT.NS"],
                         "TCS.NS": ["INFY.NS", "HCLTECH.NS", "WIPRO.NS"],
@@ -504,7 +661,6 @@ with tab_analyst:
 
                     st.divider()
 
-                    # --- FEATURE 19.2: SENTIMENT & SMART MONEY ---
                     c_sent, c_money = st.columns(2)
                     
                     with c_sent:
@@ -528,7 +684,6 @@ with tab_analyst:
                     with c_money:
                         st.subheader("🏦 Smart Money Radar")
                         if major_holders is not None:
-                            # Clean up holder data if possible, usually it's a DF with 0 and 1 cols
                             try:
                                 major_holders.columns = ["Percentage", "Category"]
                                 st.dataframe(major_holders, use_container_width=True, hide_index=True)
