@@ -4,3 +4,5 @@ feedparser
 pandas
 plotly
 textblob
+nltk
+scipy
