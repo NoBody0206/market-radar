@@ -2,6 +2,7 @@ import streamlit as st
 import yfinance as yf
 import feedparser
 import pandas as pd
+import pandas_ta as ta
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
@@ -21,7 +22,7 @@ except LookupError:
     nltk.download('vader_lexicon')
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Executive Market Radar 19.3.1", layout="wide", page_icon="🦅")
+st.set_page_config(page_title="Executive Market Radar 19.3.2", layout="wide", page_icon="🦅")
 WATCHLIST_FILE = "watchlist_data.json"
 TRADING_FILE = "trading_engine.json"
 TRANSACTION_FILE = "transactions.json"
@@ -90,7 +91,6 @@ def safe_float(val):
 
 @st.cache_data(ttl=86400)
 def get_nifty50_tickers():
-    # EXPANDED FALLBACK LIST (30 Stocks) for better "Safe Mode" visualization
     fallback_list = [
         "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", 
         "BHARTIARTL.NS", "ITC.NS", "SBIN.NS", "LICI.NS", "HINDUNILVR.NS",
@@ -248,11 +248,10 @@ def get_peer_comparison_data(main_ticker, peers):
         return normalized
     except: return pd.DataFrame()
 
-# --- MARKET X-RAY ENGINES (Fixed 19.3.1) ---
+# --- MARKET X-RAY ENGINES ---
 
 @st.cache_data(ttl=1800)
 def get_sector_rotation_map():
-    # UPDATED: Using robust set of Sector Indices
     sectors = {
         "Auto": "^CNXAUTO", "Bank": "^NSEBANK", "Energy": "^CNXENERGY", 
         "FMCG": "^CNXFMCG", "IT": "^CNXIT", "Metal": "^CNXMETAL", 
@@ -260,12 +259,10 @@ def get_sector_rotation_map():
     }
     
     try:
-        # Fetch Data with auto_adjust=True for better consistency
         tickers = list(sectors.values()) + ["^NSEI"]
         data = yf.download(tickers, period="6mo", auto_adjust=True)['Close']
         
-        if data.empty or "^NSEI" not in data.columns:
-            return pd.DataFrame()
+        if data.empty or "^NSEI" not in data.columns: return pd.DataFrame()
 
         rrg_data = []
         nifty = data["^NSEI"]
@@ -273,61 +270,37 @@ def get_sector_rotation_map():
         for name, ticker in sectors.items():
             if ticker in data.columns:
                 sector_price = data[ticker]
-                
-                # Combine and drop NaNs to avoid calculation errors
                 valid_df = pd.concat([sector_price, nifty], axis=1).dropna()
                 
-                if len(valid_df) > 20: # Ensure enough history
+                if len(valid_df) > 20: 
                     s_price = valid_df[ticker]
                     n_price = valid_df["^NSEI"]
-                    
-                    # RS Calculation
                     rs_raw = s_price / n_price
                     curr_rs = rs_raw.iloc[-1]
-                    
-                    # Momentum (ROC of RS over last 20 days)
                     rs_mom = ((rs_raw.iloc[-1] - rs_raw.iloc[-20]) / rs_raw.iloc[-20]) * 100
-                    
-                    # Relative Trend (Distance from 60-day MA)
                     rs_ma60 = rs_raw.rolling(window=60).mean().iloc[-1]
                     if pd.notna(rs_ma60) and rs_ma60 != 0:
                         rs_trend = ((curr_rs - rs_ma60) / rs_ma60) * 100
-                        
-                        rrg_data.append({
-                            "Sector": name,
-                            "RS_Trend": rs_trend,   # X-Axis
-                            "RS_Momentum": rs_mom   # Y-Axis
-                        })
-                
+                        rrg_data.append({"Sector": name, "RS_Trend": rs_trend, "RS_Momentum": rs_mom})
         return pd.DataFrame(rrg_data)
-    except Exception as e:
-        return pd.DataFrame()
+    except: return pd.DataFrame()
 
 @st.cache_data(ttl=600)
 def get_market_breadth():
     try:
         tickers = get_nifty50_tickers()
-        # Limit to 30 to prevent timeouts, but use fallback list if Wiki fails
         scan_list = tickers[:30]
         data = yf.download(scan_list, period="2d", auto_adjust=True)['Close']
-        
         if data.empty: return 0, 0, 0.5
-        
-        # Calculate moves based on available columns
-        advances = 0
-        declines = 0
-        
+        advances = 0; declines = 0
         if len(data) >= 2:
             current = data.iloc[-1]
             prev = data.iloc[-2]
             diff = current - prev
-            
             advances = (diff > 0).sum()
             declines = (diff < 0).sum()
-            
         total = advances + declines
         ratio = advances / total if total > 0 else 0.5
-        
         return advances, declines, ratio
     except: return 0, 0, 0.5
 
@@ -335,10 +308,117 @@ def get_market_breadth():
 def get_fear_greed_vix():
     try:
         vix = yf.Ticker("^INDIAVIX").history(period="1d")
-        if not vix.empty:
-            return vix['Close'].iloc[-1]
-        return 15.0 # Default fallback
+        if not vix.empty: return vix['Close'].iloc[-1]
+        return 15.0 
     except: return 15.0
+
+# --- RISK COMMANDER ENGINES (NEW 19.3.2) ---
+
+@st.cache_data(ttl=3600)
+def calculate_portfolio_beta(holdings_dict):
+    # Returns the weighted beta of the portfolio
+    if not holdings_dict: return 1.0 # Default market beta
+    
+    total_val = 0
+    weighted_beta = 0
+    
+    for ticker, data in holdings_dict.items():
+        qty = data['qty']
+        try:
+            t = yf.Ticker(ticker)
+            price = t.fast_info.last_price
+            beta = t.info.get('beta', 1.0)
+            
+            # Handle None beta (some instruments don't have it)
+            if beta is None: beta = 1.0
+            
+            val = qty * price
+            total_val += val
+            weighted_beta += (val * beta)
+        except:
+            pass # Skip if error
+            
+    if total_val == 0: return 1.0
+    return weighted_beta / total_val
+
+@st.cache_data(ttl=3600)
+def get_future_catalysts(tickers):
+    catalysts = []
+    today = datetime.now().date()
+    
+    def fetch_cal(t):
+        try:
+            stock = yf.Ticker(t)
+            cal = stock.calendar
+            # calendar is sometimes a Dict or DataFrame depending on version
+            if isinstance(cal, dict) and 'Earnings Date' in cal:
+                earnings_dates = cal['Earnings Date']
+                # Usually a list of dates, take the first future one
+                for d in earnings_dates:
+                    d_date = d.date()
+                    if d_date >= today:
+                        days_left = (d_date - today).days
+                        return {"Ticker": t, "Event": "Earnings", "Date": d_date, "Days Left": days_left}
+            elif isinstance(cal, pd.DataFrame):
+                # Process DataFrame if needed
+                pass
+        except: return None
+        return None
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        results = list(executor.map(fetch_cal, tickers))
+    
+    return [r for r in results if r is not None]
+
+@st.cache_data(ttl=1800)
+def run_technical_sniper(tickers):
+    # Calculate RSI and SMA for a batch of tickers
+    # We download batch history for efficiency
+    
+    report = []
+    try:
+        # Download 1 year of data for all tickers to ensure enough for 200 SMA
+        data = yf.download(tickers, period="1y", group_by='ticker', auto_adjust=True)
+        
+        for t in tickers:
+            try:
+                # Extract single ticker data
+                if len(tickers) > 1:
+                    df = data[t].copy()
+                else:
+                    df = data.copy() # If only 1 ticker
+                
+                # Check for enough data (need > 200 rows for 200 SMA)
+                if len(df) > 200:
+                    # RSI 14
+                    df['RSI'] = df.ta.rsi(length=14)
+                    # SMA 200
+                    df['SMA_200'] = df.ta.sma(length=200)
+                    
+                    curr_price = df['Close'].iloc[-1]
+                    curr_rsi = df['RSI'].iloc[-1]
+                    curr_sma = df['SMA_200'].iloc[-1]
+                    
+                    rsi_status = "Neutral"
+                    if curr_rsi < 30: rsi_status = "Oversold (Buy Signal)"
+                    elif curr_rsi > 70: rsi_status = "Overbought (Sell Signal)"
+                    
+                    trend = "Bearish"
+                    if curr_price > curr_sma: trend = "Bullish (Above 200 SMA)"
+                    
+                    report.append({
+                        "Ticker": t,
+                        "Price": curr_price,
+                        "RSI": round(curr_rsi, 2),
+                        "RSI Status": rsi_status,
+                        "Trend": trend
+                    })
+            except Exception as e:
+                continue
+    except:
+        pass
+        
+    return report
 
 # --- RENDERERS ---
 
@@ -393,11 +473,11 @@ def render_news(news):
 # --- APP LAYOUT ---
 c_title, c_badge = st.columns([4,1])
 with c_title:
-    st.title("🦅 Executive Market Radar 19.3.1")
-    st.caption("Strategic Intelligence | AI Sentiment | Smart Money | Market X-Ray")
+    st.title("🦅 Executive Market Radar 19.3.2")
+    st.caption("Strategic Intelligence | Risk Commander | Technical Sniper")
 
-tab_india, tab_global, tab_xray, tab_ceo, tab_trade, tab_analyst = st.tabs([
-    "🇮🇳 India", "🌎 Global", "🩻 Market X-Ray", "🏛️ CEO Radar", "📈 Trading Floor", "🧠 Analyst Lab"
+tab_india, tab_global, tab_xray, tab_risk, tab_ceo, tab_trade, tab_analyst = st.tabs([
+    "🇮🇳 India", "🌎 Global", "🩻 Market X-Ray", "🛡️ Risk & Future", "🏛️ CEO Radar", "📈 Trading Floor", "🧠 Analyst Lab"
 ])
 
 # --- TAB 1: INDIA ---
@@ -436,13 +516,12 @@ with tab_global:
     with c1: st.markdown("**🇺🇸 Wall St & Fed**"); render_news(fetch_feed_parallel([get_google_rss("Federal Reserve News"), get_google_rss("Wall Street Market Analysis")]))
     with c2: st.markdown("**🌏 Geopolitics & Energy**"); render_news(fetch_feed_parallel([get_google_rss("Global Oil Prices OPEC"), get_google_rss("China Economy News")]))
 
-# --- TAB 3: MARKET X-RAY (FIXED 19.3.1) ---
+# --- TAB 3: MARKET X-RAY ---
 with tab_xray:
     st.markdown("<div class='section-header'>🩻 Market X-Ray (Hidden Signals)</div>", unsafe_allow_html=True)
     
     # ROW 1: Sector Rotation Map
     st.subheader("1. 🔄 Sector Rotation Map (Smart Money Flow)")
-    st.caption("X-Axis: Relative Trend (Vs Nifty) | Y-Axis: Momentum (Speed). Top Right = Leaders.")
     
     rrg_df = get_sector_rotation_map()
     if not rrg_df.empty:
@@ -450,20 +529,16 @@ with tab_xray:
                              color="Sector", size=[10]*len(rrg_df),
                              title="Sector Relative Strength & Momentum (RRG Proxy)")
         
-        # Add Quadrant Lines
         fig_rrg.add_hline(y=0, line_dash="dash", line_color="gray")
         fig_rrg.add_vline(x=0, line_dash="dash", line_color="gray")
         
-        # Annotations for Quadrants
-        fig_rrg.add_annotation(x=2, y=2, text="LEADING (Buy)", showarrow=False, font=dict(color="#00C805"))
-        fig_rrg.add_annotation(x=-2, y=-2, text="LAGGING (Avoid)", showarrow=False, font=dict(color="#FF3B30"))
-        fig_rrg.add_annotation(x=2, y=-2, text="WEAKENING", showarrow=False, font=dict(color="orange"))
-        fig_rrg.add_annotation(x=-2, y=2, text="IMPROVING", showarrow=False, font=dict(color="cyan"))
+        fig_rrg.add_annotation(x=2, y=2, text="LEADING", showarrow=False, font=dict(color="#00C805"))
+        fig_rrg.add_annotation(x=-2, y=-2, text="LAGGING", showarrow=False, font=dict(color="#FF3B30"))
         
         fig_rrg.update_layout(height=500, template="plotly_dark")
         st.plotly_chart(fig_rrg, use_container_width=True)
     else:
-        st.warning("⚠️ Data Unavailable: Yahoo Finance sector indices are currently non-responsive. Please try again later during market hours.")
+        st.warning("⚠️ Sector data currently unavailable.")
 
     st.divider()
 
@@ -474,7 +549,6 @@ with tab_xray:
         st.subheader("2. 🕵️ The Truth Detector (Market Breadth)")
         adv, dec, ratio = get_market_breadth()
         
-        # Speedometer Gauge
         fig_gauge = go.Figure(go.Indicator(
             mode = "gauge+number",
             value = ratio * 100,
@@ -484,7 +558,6 @@ with tab_xray:
                 'bar': {'color': "#00C805" if ratio > 0.5 else "#FF3B30"},
                 'steps': [
                     {'range': [0, 40], 'color': "rgba(255, 59, 48, 0.3)"},
-                    {'range': [40, 60], 'color': "rgba(255, 255, 255, 0.1)"},
                     {'range': [60, 100], 'color': "rgba(0, 200, 5, 0.3)"}
                 ],
             }
@@ -492,25 +565,14 @@ with tab_xray:
         fig_gauge.update_layout(height=300, margin=dict(t=50,b=10,l=30,r=30), paper_bgcolor='rgba(0,0,0,0)', font={'color': "white"})
         st.plotly_chart(fig_gauge, use_container_width=True)
         
-        st.markdown(f"**Advances:** {adv} | **Declines:** {dec} (Sample: {adv+dec} Stocks)")
-        if ratio < 0.4: st.error("⚠️ Warning: Weak Breadth (Narrow Rally or Broad Selloff)")
-        elif ratio > 0.6: st.success("✅ Strong Breadth (Healthy Rally)")
-        else: st.info("⚖️ Neutral Market Breadth")
+        st.markdown(f"**Advances:** {adv} | **Declines:** {dec}")
 
     with c_fear:
         st.subheader("3. 🌡️ Fear & Greed Thermometer (India VIX)")
         vix_val = get_fear_greed_vix()
-        
-        # Color Logic
-        if vix_val < 13: 
-            v_color = "#00C805" # Green (Complacency)
-            v_msg = "😎 COMPLACENCY (High Confidence)"
-        elif vix_val < 20: 
-            v_color = "#FFA726" # Orange (Normal)
-            v_msg = "😐 NORMAL MARKET (Standard Risk)"
-        else: 
-            v_color = "#FF3B30" # Red (Fear)
-            v_msg = "😱 HIGH FEAR (Crash Risk / Expensive Hedges)"
+        if vix_val < 13: v_color = "#00C805"; v_msg = "😎 COMPLACENCY"
+        elif vix_val < 20: v_color = "#FFA726"; v_msg = "😐 NORMAL MARKET"
+        else: v_color = "#FF3B30"; v_msg = "😱 HIGH FEAR"
 
         st.markdown(f"""
         <div style="background-color: #262730; padding: 20px; border-radius: 10px; text-align: center;">
@@ -521,10 +583,93 @@ with tab_xray:
             </div>
         </div>
         """, unsafe_allow_html=True)
-        
-        st.caption("• <13: Bullish but watch for reversals.\n• 13-20: Range-bound/Trending.\n• >20: High Volatility/Bearish pressure.")
 
-# --- TAB 4: CEO RADAR ---
+# --- TAB 4: RISK & FUTURE (NEW 19.3.2) ---
+with tab_risk:
+    st.markdown("<div class='section-header'>🛡️ Risk Commander & Future Radar</div>", unsafe_allow_html=True)
+    
+    # 1. STRESS TEST SIMULATOR
+    st.subheader("💥 Stress Test Simulator")
+    
+    # Get portfolio beta (Simulated using holdings if available, else use a sample)
+    holdings = st.session_state.trading['india']['holdings']
+    
+    # Calculate Total Portfolio Value
+    portfolio_value = 0
+    if holdings:
+        # Simple estimation using last known price (in production use live price)
+        for h_tick, h_data in holdings.items():
+            portfolio_value += (h_data['qty'] * h_data['avg_price']) # Using cost basis for speed, switch to live in prod
+            
+    if not holdings:
+        st.info("⚠️ No holdings found in 'Trading Floor'. Add stocks to run stress test. (Showing Demo with ₹10L)")
+        portfolio_value = 1000000
+        port_beta = 1.15 # Demo High Beta
+    else:
+        port_beta = calculate_portfolio_beta(holdings)
+    
+    c_sim, c_res = st.columns([1, 2])
+    with c_sim:
+        drop_scenario = st.slider("Market Drop Scenario (%)", -50, 0, -10, step=5)
+        st.metric("Portfolio Beta", f"{port_beta:.2f}", help=">1.0 means more volatile than market")
+        st.metric("Portfolio Value", f"₹{portfolio_value:,.0f}")
+        
+    with c_res:
+        projected_loss_pct = drop_scenario * port_beta
+        projected_loss_val = portfolio_value * (projected_loss_pct / 100)
+        
+        st.markdown(f"""
+        <div style="background-color: #FF3B3020; border: 2px solid #FF3B30; padding: 20px; border-radius: 10px;">
+            <h3>🚨 IMPACT SIMULATION</h3>
+            <div style="font-size: 18px;">If Nifty drops <b>{drop_scenario}%</b>...</div>
+            <div style="font-size: 18px; margin-top: 10px;">Your Portfolio falls: <b style="color: #FF3B30;">{projected_loss_pct:.2f}%</b></div>
+            <div style="font-size: 32px; font-weight: bold; color: #FF3B30; margin-top: 5px;">₹{projected_loss_val:,.0f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.divider()
+    
+    # 2. FUTURE CATALYST RADAR
+    st.subheader("📅 Future Catalyst Radar (Earnings)")
+    if st.button("Scan Watchlist for Earnings"):
+        scan_list = st.session_state.watchlist["india"]
+        if not scan_list: scan_list = ["RELIANCE.NS", "TCS.NS", "INFY.NS"] # Demo fallback
+        
+        catalysts = get_future_catalysts(scan_list)
+        if catalysts:
+            df_cat = pd.DataFrame(catalysts).sort_values(by="Days Left")
+            
+            # Highlight immediate events
+            def highlight_urgent(row):
+                if row['Days Left'] <= 3: return ['background-color: #FF3B30; color: white'] * len(row)
+                return [''] * len(row)
+            
+            st.dataframe(df_cat.style.apply(highlight_urgent, axis=1), use_container_width=True)
+        else:
+            st.info("No upcoming earnings found for watchlist stocks.")
+
+    st.divider()
+
+    # 3. TECHNICAL SNIPER
+    st.subheader("🎯 Technical Sniper (RSI & Trends)")
+    if st.button("Run Tech Scan (Nifty 50 Sample)"):
+        sample_tickers = get_nifty50_tickers()[:15] # Limit for speed
+        tech_report = run_technical_sniper(sample_tickers)
+        
+        if tech_report:
+            df_tech = pd.DataFrame(tech_report)
+            
+            # Color coding function
+            def color_tech(val):
+                color = 'white'
+                if val == "Oversold (Buy Signal)": color = '#00C805'
+                elif val == "Overbought (Sell Signal)": color = '#FF3B30'
+                elif "Bullish" in str(val): color = '#00C805'
+                return f'color: {color}; font-weight: bold'
+                
+            st.dataframe(df_tech.style.map(color_tech, subset=['RSI Status', 'Trend']), use_container_width=True)
+
+# --- TAB 5: CEO RADAR ---
 with tab_ceo:
     st.markdown("<div class='section-header'>🏛️ Strategic Situation Room</div>", unsafe_allow_html=True)
     c_yield, c_pulse = st.columns([2, 1])
@@ -577,7 +722,7 @@ with tab_ceo:
         f = plot_treemap({"Tech": "IXN", "Energy": "IXC", "Finance": "IXG"}, "Global Sectors")
         if f: st.plotly_chart(f, use_container_width=True, key="tree_gl")
 
-# --- TAB 5: TRADING FLOOR ---
+# --- TAB 6: TRADING FLOOR ---
 with tab_trade:
     if 'trading' in st.session_state:
         st.markdown("<div class='section-header'>📈 Virtual Exchange</div>", unsafe_allow_html=True)
@@ -634,9 +779,9 @@ with tab_trade:
         if port['holdings']:
             st.dataframe(pd.DataFrame([{"Ticker": k, "Qty": v['qty'], "Avg": f"{curr}{v['avg_price']:.2f}"} for k,v in port['holdings'].items()]), use_container_width=True)
 
-# --- TAB 6: ANALYST LAB ---
+# --- TAB 7: ANALYST LAB ---
 with tab_analyst:
-    st.markdown("<div class='section-header'>🧠 Analyst Lab 19.3.1</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-header'>🧠 Analyst Lab 19.3.2</div>", unsafe_allow_html=True)
     mode = st.radio("Mode:", ["🧠 Deep Dive", "⚡ Screener"], horizontal=True)
     
     if mode == "⚡ Screener":
