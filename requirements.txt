@@ -7,3 +7,7 @@ textblob
 nltk
 scipy
 pandas_ta
+nselib
+numpy
+lxml
+beautifulsoup4
