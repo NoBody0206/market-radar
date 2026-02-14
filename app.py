@@ -24,10 +24,9 @@ except LookupError:
     nltk.download('vader_lexicon')
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Executive Market Radar v22.0", layout="wide", page_icon="🦅")
+st.set_page_config(page_title="Executive Market Radar v23.0", layout="wide", page_icon="🦅")
 WATCHLIST_FILE = "watchlist_data.json"
 TRADING_FILE = "trading_engine.json"
-INSTITUTIONAL_FILE = "institutional_history.json"
 
 # --- PRO CSS STYLING ---
 st.markdown("""
@@ -45,11 +44,12 @@ st.markdown("""
     }
     .metric-value { font-size: 26px; font-weight: bold; margin: 5px 0; color: #FFF; }
     
+    /* News Cards */
+    .news-card { border-left: 3px solid #4CAF50; background-color: #262730; padding: 12px; margin-bottom: 10px; border-radius: 6px; }
+    .news-title { font-size: 14px; font-weight: 600; color: #E0E0E0; text-decoration: none; }
+    
     /* Verdict Card */
     .verdict-card { background: linear-gradient(45deg, #1e1e1e, #2d2d2d); padding: 20px; border-radius: 12px; border-left: 6px solid; margin-bottom: 20px; text-align:center; }
-    
-    /* Table Styling */
-    .stTable { font-size: 14px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -69,16 +69,18 @@ if 'trading' not in st.session_state: st.session_state.trading = load_json(TRADI
 
 # --- BACKEND FUNCTIONS ---
 
+def get_google_rss(query): 
+    return f"https://news.google.com/rss/search?q={query.replace(' ', '%20')}&hl=en-IN&gl=IN&ceid=IN:en"
+
 @st.cache_data(ttl=86400)
 def get_nifty50_tickers():
-    fallback_list = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", "ITC.NS", "SBIN.NS", "LICI.NS", "BHARTIARTL.NS", "HINDUNILVR.NS"]
+    fallback = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ITC.NS", "SBIN.NS"]
     try:
-        url = "https://en.wikipedia.org/wiki/NIFTY_50"
-        tables = pd.read_html(url)
+        tables = pd.read_html("https://en.wikipedia.org/wiki/NIFTY_50")
         for table in tables:
             if 'Symbol' in table.columns: return [f"{s}.NS" for s in table['Symbol'].tolist()]
-        return fallback_list
-    except: return fallback_list
+        return fallback
+    except: return fallback
 
 @st.cache_data(ttl=300)
 def get_ticker_data_parallel(tickers):
@@ -87,28 +89,48 @@ def get_ticker_data_parallel(tickers):
             s = yf.Ticker(t)
             h = s.history(period="5d", interval="1d")
             if len(h) > 1:
-                return {
-                    "symbol": t, 
-                    "price": h['Close'].iloc[-1], 
-                    "change": ((h['Close'].iloc[-1]-h['Close'].iloc[-2])/h['Close'].iloc[-2])*100
-                }
+                return {"symbol": t, "price": h['Close'].iloc[-1], "change": ((h['Close'].iloc[-1]-h['Close'].iloc[-2])/h['Close'].iloc[-2])*100}
         except: return None
     with concurrent.futures.ThreadPoolExecutor() as executor:
         results = [r for r in executor.map(fetch, tickers) if r]
     return results
 
-# --- ALPHA ENGINES (SMART MONEY & MACRO) ---
+@st.cache_data(ttl=600)
+def fetch_feed_parallel(url_list):
+    all_news = []
+    def fetch(url):
+        try:
+            f = feedparser.parse(url)
+            return [{"title": e.title, "link": e.link, "source": e.source.title if 'source' in e else "News", "date": e.published[:16]} for e in f.entries[:5]]
+        except: return []
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        for res in executor.map(fetch, url_list): all_news.extend(res)
+    return all_news[:6]
+
+# --- RESTORED: ECONOMIC INDICATORS (YIELD CURVE) ---
+@st.cache_data(ttl=600)
+def get_yield_curve_data():
+    tickers = ["^IRX", "^FVX", "^TNX", "^TYX"]
+    labels = ["3M", "5Y", "10Y", "30Y"]
+    try:
+        data = yf.download(tickers, period="2d")['Close'].iloc[-1]
+        values = []
+        for t in tickers:
+            if t in data: values.append(data[t])
+            else: values.append(0)
+        return labels, values
+    except: return [], []
+
+# --- 1% ENGINES (SMART MONEY & FORENSICS) ---
 
 @st.cache_data(ttl=3600)
 def get_fii_dii_activity():
     try:
         data = capital_market.fii_dii_trading_activity()
         if not data.empty:
-            fii_buy = float(data[data['Category'] == 'FII/FPI *']['Buy Value'].iloc[0].replace(',',''))
-            fii_sell = float(data[data['Category'] == 'FII/FPI *']['Sell Value'].iloc[0].replace(',',''))
-            dii_buy = float(data[data['Category'] == 'DII **']['Buy Value'].iloc[0].replace(',',''))
-            dii_sell = float(data[data['Category'] == 'DII **']['Sell Value'].iloc[0].replace(',',''))
-            return {"fii_net": fii_buy - fii_sell, "dii_net": dii_buy - dii_sell, "date": data['Date'].iloc[0]}
+            fii_net = float(data[data['Category'] == 'FII/FPI *']['Buy Value'].iloc[0].replace(',','')) - float(data[data['Category'] == 'FII/FPI *']['Sell Value'].iloc[0].replace(',',''))
+            dii_net = float(data[data['Category'] == 'DII **']['Buy Value'].iloc[0].replace(',','')) - float(data[data['Category'] == 'DII **']['Sell Value'].iloc[0].replace(',',''))
+            return {"fii_net": fii_net, "dii_net": dii_net, "date": data['Date'].iloc[0]}
     except: return {"fii_net": 0, "dii_net": 0, "date": "N/A"}
 
 @st.cache_data(ttl=3600)
@@ -117,10 +139,7 @@ def get_macro_environment():
     data = yf.download(tickers, period="6mo", interval="1d")['Close']
     res = {}
     if not data.empty:
-        if "^TNX" in data:
-            tnx_curr = data["^TNX"].iloc[-1]
-            tnx_prev = data["^TNX"].iloc[-20]
-            res['us10y'] = {"val": tnx_curr, "trend": "RISING" if tnx_curr > tnx_prev else "FALLING"}
+        if "^TNX" in data: res['us10y'] = {"val": data["^TNX"].iloc[-1]}
         if "CL=F" in data: res['oil'] = {"val": data["CL=F"].iloc[-1]}
         if "^NSEI" in data:
             nifty = data["^NSEI"]
@@ -128,208 +147,148 @@ def get_macro_environment():
             res['nifty_trend'] = "BULLISH" if nifty.iloc[-1] > sma_200 else "BEARISH"
     return res
 
-@st.cache_data(ttl=1800)
-def get_sector_rotation_map():
-    sectors = {"Auto": "^CNXAUTO", "Bank": "^NSEBANK", "IT": "^CNXIT", "Metal": "^CNXMETAL", "Pharma": "^CNXPHARMA", "FMCG": "^CNXFMCG", "Energy": "^CNXENERGY"}
-    try:
-        tickers = list(sectors.values()) + ["^NSEI"]
-        data = yf.download(tickers, period="6mo", interval="1d")['Close']
-        if data.empty or "^NSEI" not in data.columns: return pd.DataFrame()
-
-        rrg_data = []
-        nifty = data["^NSEI"]
-        for name, ticker in sectors.items():
-            if ticker in data.columns:
-                rs_raw = data[ticker] / nifty
-                rs_trend = ((rs_raw.iloc[-1] - rs_raw.rolling(20).mean().iloc[-1]) / rs_raw.rolling(20).mean().iloc[-1]) * 100
-                rs_mom = ((rs_raw.iloc[-1] - rs_raw.iloc[-10]) / rs_raw.iloc[-10]) * 100
-                
-                status = "LAGGING"
-                if rs_trend > 0 and rs_mom > 0: status = "LEADING"
-                elif rs_trend > 0 and rs_mom < 0: status = "WEAKENING"
-                elif rs_trend < 0 and rs_mom > 0: status = "IMPROVING"
-                
-                rrg_data.append({"Sector": name, "RS_Trend": rs_trend, "RS_Momentum": rs_mom, "Status": status})
-        return pd.DataFrame(rrg_data)
-    except: return pd.DataFrame()
-
-# --- FORENSIC & VALUATION ENGINE (NEW v22.0) ---
-
 @st.cache_data(ttl=86400)
 def get_forensic_analysis(ticker):
-    """Deep dives into Cash Flow quality and Valuation"""
     try:
         s = yf.Ticker(ticker)
-        # Fetch Financials
-        cf = s.cashflow
-        fin = s.financials
-        info = s.info
+        cf = s.cashflow; fin = s.financials; info = s.info
         
-        # Safe Defaults
-        quality_ratio = 0
-        fcf = 0
-        roe = info.get('returnOnEquity', 0)
-        pe = info.get('trailingPE', 0)
-        debt_eq = info.get('debtToEquity', 0)
-        peg = info.get('pegRatio', 0)
-        
-        # Forensic Calculations
+        quality_ratio = 0; fcf = 0
         if not cf.empty and not fin.empty:
-            # 1. Earnings Quality (CFO / Net Income)
             try:
-                # Handle different key names in yfinance
                 ocf = cf.loc['Operating Cash Flow'].iloc[0] if 'Operating Cash Flow' in cf.index else cf.loc['Total Cash From Operating Activities'].iloc[0]
                 ni = fin.loc['Net Income'].iloc[0]
                 quality_ratio = ocf / ni if ni != 0 else 0
+                fcf = cf.loc['Free Cash Flow'].iloc[0] if 'Free Cash Flow' in cf.index else (ocf + cf.loc['Capital Expenditure'].iloc[0])
             except: pass
-            
-            # 2. Free Cash Flow
-            try:
-                fcf = cf.loc['Free Cash Flow'].iloc[0]
-            except: 
-                # Fallback calculation
-                try:
-                    ocf = cf.loc['Operating Cash Flow'].iloc[0]
-                    capex = cf.loc['Capital Expenditure'].iloc[0]
-                    fcf = ocf + capex # Capex is usually negative
-                except: pass
-                
-        return {
-            "quality_ratio": quality_ratio,
-            "fcf": fcf,
-            "roe": roe * 100 if roe else 0,
-            "pe": pe,
-            "debt_eq": debt_eq,
-            "peg": peg
-        }
+        return {"quality_ratio": quality_ratio, "fcf": fcf, "roe": info.get('returnOnEquity',0)*100, "pe": info.get('trailingPE',0), "peg": info.get('pegRatio',0)}
     except: return None
 
-# --- RISK COMMANDER (DEFENSE INTELLIGENCE) ---
-
+# --- RISK & SECTOR MAP ---
 @st.cache_data(ttl=3600)
 def get_refined_risk_intelligence(holdings):
     if not holdings: return None
     tickers = list(holdings.keys())
-    # 1 Year data for robust stats
     data = yf.download(tickers, period="1y")['Close']
     if data.empty: return None
     
     returns = data.pct_change().dropna()
-    
-    # Calculate Weights
     prices = {t: data[t].iloc[-1] for t in tickers}
     values = {t: holdings[t]['qty'] * prices[t] for t in tickers}
     total_val = sum(values.values())
-    if total_val == 0: return None
-    
     weights = np.array([values[t] / total_val for t in tickers])
     
-    # 1. Correlation Matrix & Score
     corr_matrix = returns.corr()
     avg_corr = (corr_matrix.values.sum() - len(tickers)) / (len(tickers)**2 - len(tickers)) if len(tickers) > 1 else 1.0
     
-    # 2. Portfolio Volatility (Annualized)
     cov_matrix = returns.cov() * 252
-    port_variance = np.dot(weights.T, np.dot(cov_matrix, weights))
-    port_volatility = np.sqrt(port_variance) * 100
-    
-    # 3. VaR (99% Confidence, 1 Day)
-    var_99 = total_val * (port_volatility / 100 / np.sqrt(252)) * 2.33
-    
-    return {
-        "corr": corr_matrix, "avg_corr": avg_corr,
-        "vol": port_volatility, "var": var_99, "total_val": total_val
-    }
+    port_vol = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights))) * 100
+    var_99 = total_val * (port_vol / 100 / np.sqrt(252)) * 2.33
+    return {"corr": corr_matrix, "avg_corr": avg_corr, "vol": port_vol, "var": var_99, "total_val": total_val}
 
 def generate_market_verdict(macro, fii_data):
     score = 0; reasons = []
-    
-    # 1. Macro Logic
     us_yield = macro.get('us10y', {}).get('val', 0)
     if us_yield > 0 and us_yield < 4.0: score += 2; reasons.append("✅ US Yields Benign (<4%)")
     elif us_yield > 4.5: score -= 2; reasons.append("❌ US Yields Spiking (>4.5%)")
     
-    oil_val = macro.get('oil', {}).get('val', 80)
-    if oil_val < 80: score += 1; reasons.append("✅ Crude Oil Stable")
-    
-    # 2. Smart Money Logic
     if fii_data['fii_net'] > 500: score += 2; reasons.append("✅ FIIs Buying Aggressively")
     elif fii_data['fii_net'] < -500: score -= 2; reasons.append("❌ FIIs Selling Heavily")
     
-    # 3. Technical Logic
     if macro.get('nifty_trend') == "BULLISH": score += 2; reasons.append("✅ Nifty above 200 SMA")
     else: score -= 2; reasons.append("⚠️ Nifty below 200 SMA")
     
     if score >= 4: return "STRONG BUY", "#00C805", reasons
     elif score >= 1: return "ACCUMULATE", "#FFA726", reasons
-    elif score >= -2: return "NEUTRAL / CAUTION", "#FFD700", reasons
+    elif score >= -2: return "NEUTRAL", "#FFD700", reasons
     else: return "STRONG SELL", "#FF3B30", reasons
 
 # --- RENDERERS ---
 def render_metric_card(title, value, sub_value, color):
-    st.markdown(f"""
-    <div class="metric-container" style="border-left: 4px solid {color};">
-        <div style="font-size:12px; color:#aaa; font-weight:bold;">{title}</div>
-        <div class="metric-value" style="color:{color}">{value}</div>
-        <div style="font-size:14px; color:#ddd;">{sub_value}</div>
-    </div>""", unsafe_allow_html=True)
+    st.markdown(f"""<div class="metric-container" style="border-left: 4px solid {color};"><div style="font-size:12px; color:#aaa; font-weight:bold;">{title}</div><div class="metric-value" style="color:{color}">{value}</div><div style="font-size:14px; color:#ddd;">{sub_value}</div></div>""", unsafe_allow_html=True)
+
+def render_news(news):
+    if not news: st.caption("No updates."); return
+    for n in news: st.markdown(f"""<div class="news-card"><a href="{n['link']}" class="news-title" target="_blank">{n['title']}</a><br><span style="font-size:10px; color:#888;">{n['source']} • {n['date']}</span></div>""", unsafe_allow_html=True)
 
 # --- APP LAYOUT ---
 c_title, c_badge = st.columns([4,1])
 with c_title:
-    st.title("🦅 Executive Market Radar v22.0")
-    st.caption("The '1%' System | Smart Money | X-Ray | Forensics")
+    st.title("🦅 Executive Market Radar v23.0")
+    st.caption("The Ultimate System | Smart Money | CEO Radar | Global Trade")
 
-# --- GLOBAL FETCH ---
 macro_data = get_macro_environment()
 fii_data = get_fii_dii_activity()
 verdict, v_color, v_reasons = generate_market_verdict(macro_data, fii_data)
 
-st.markdown(f"""
-<div class="verdict-card" style="border-color: {v_color};">
-    <h2 style="margin:0; color: {v_color};">{verdict}</h2>
-    <p style="margin:0; color: #ddd;">System Confidence Score</p>
-</div>""", unsafe_allow_html=True)
+st.markdown(f"""<div class="verdict-card" style="border-color: {v_color};"><h2 style="margin:0; color: {v_color};">{verdict}</h2><p style="margin:0; color: #ddd;">System Confidence Score</p></div>""", unsafe_allow_html=True)
 
 # --- TABS ---
-tabs = st.tabs(["🏛️ Smart Money", "🔭 Macroscope", "🩻 X-Ray", "🛡️ Risk Commander", "🇮🇳 India", "🌎 Global", "📉 Trading", "🧠 Lab (Forensics)"])
+tabs = st.tabs(["🏛️ CEO Radar", "🇮🇳 India Pulse", "🌎 Global Pulse", "🛡️ Risk Commander", "📉 Trading Floor", "🧠 Analyst Lab"])
 
-# --- TAB 1: SMART MONEY ---
+# --- TAB 1: CEO RADAR (The Strategic Situation Room) ---
 with tabs[0]:
-    st.subheader("🏦 Institutional Cash Flow")
-    c1, c2, c3, c4 = st.columns(4)
-    fii_col = "#00C805" if fii_data['fii_net'] > 0 else "#FF3B30"
-    dii_col = "#00C805" if fii_data['dii_net'] > 0 else "#FF3B30"
-    with c1: render_metric_card("FII NET FLOW", f"₹{fii_data['fii_net']:.0f} Cr", f"Date: {fii_data['date']}", fii_col)
-    with c2: render_metric_card("DII NET FLOW", f"₹{fii_data['dii_net']:.0f} Cr", "Domestic Support", dii_col)
-    with c3: render_metric_card("US 10Y YIELD", f"{macro_data.get('us10y', {}).get('val', 0):.2f}%", "Liquidity Proxy", "#FFA726")
-    with c4: st.write("### 🧠 Verdict Logic"); st.write(v_reasons)
+    st.subheader("🏛️ Strategic Situation Room")
+    
+    # 1. Yield Curve (Restored)
+    c_yield, c_money = st.columns([2, 1])
+    with c_yield:
+        st.markdown("**⚠️ US Yield Curve (Recession Watch)**")
+        labels, values = get_yield_curve_data()
+        if labels:
+            fig = go.Figure(go.Scatter(x=labels, y=values, mode='lines+markers', line=dict(color='#FFA726', width=4)))
+            fig.update_layout(height=250, margin=dict(t=10,b=10,l=10,r=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color="white")
+            st.plotly_chart(fig, use_container_width=True)
+            
+    with c_money:
+        st.markdown("**🏦 Smart Money Flow**")
+        fii_col = "#00C805" if fii_data['fii_net'] > 0 else "#FF3B30"
+        render_metric_card("FII NET FLOW", f"₹{fii_data['fii_net']:.0f} Cr", f"Date: {fii_data['date']}", fii_col)
+        render_metric_card("US 10Y YIELD", f"{macro_data.get('us10y', {}).get('val', 0):.2f}%", "Liquidity Proxy", "#FFA726")
 
-# --- TAB 2: MACROSCOPE ---
+    st.divider()
+    # 2. Strategic News (Restored)
+    c1, c2, c3 = st.columns(3)
+    with c1: st.markdown("**🌏 Geopolitics & Energy**"); render_news(fetch_feed_parallel([get_google_rss("Global Oil Prices OPEC"), get_google_rss("China Economy News")]))
+    with c2: st.markdown("**🏦 Central Banks & Policy**"); render_news(fetch_feed_parallel([get_google_rss("Federal Reserve News"), get_google_rss("RBI Policy India")]))
+    with c3: st.markdown("**🚀 Tech & AI Trends**"); render_news(fetch_feed_parallel([get_google_rss("Artificial Intelligence Business News"), get_google_rss("Nvidia Stock News")]))
+
+# --- TAB 2: INDIA PULSE (With Sector News) ---
 with tabs[1]:
-    st.subheader("🌍 Macro Environment")
-    if st.button("Load Macro Correlations"):
-        try:
-            df_macro = yf.download(["^NSEI", "^TNX"], period="2y", interval="1wk")['Close']
-            df_norm = df_macro / df_macro.iloc[0] * 100
-            st.line_chart(df_norm)
-            st.info("Inverse Correlation: When TNX (Red) spikes, Nifty (Blue) often struggles.")
-        except: st.error("Data fetch failed.")
+    st.subheader("🇮🇳 India Market Pulse")
+    tickers = ["^NSEI", "^BSESN", "^NSEBANK", "GC=F"] 
+    data = get_ticker_data_parallel(tickers)
+    cols = st.columns(4)
+    if data:
+        for i, d in enumerate(data):
+            c_val = "#00C805" if d['change'] >= 0 else "#FF3B30"
+            with cols[i]: render_metric_card(d['symbol'], f"{d['price']:,.0f}", f"{d['change']:+.2f}%", c_val)
+            
+    st.divider()
+    c1, c2 = st.columns(2)
+    with c1: st.markdown("**🏭 Corporate India News**"); render_news(fetch_feed_parallel([get_google_rss("Nifty 50 News"), get_google_rss("Indian Banking Sector")]))
+    with c2: st.markdown("**🏗️ Infra & Economy**"); render_news(fetch_feed_parallel([get_google_rss("India Infrastructure News"), get_google_rss("Indian Economy Updates")]))
 
-# --- TAB 3: X-RAY ---
+# --- TAB 3: GLOBAL PULSE (With Sector News) ---
 with tabs[2]:
-    st.subheader("🩻 Sector Rotation (RRG Proxy)")
-    rrg_df = get_sector_rotation_map()
-    if not rrg_df.empty:
-        fig_rrg = px.scatter(rrg_df, x="RS_Momentum", y="RS_Trend", color="Status", text="Sector", size=[15]*len(rrg_df),
-            color_discrete_map={"LEADING": "#00C805", "WEAKENING": "#FFFF00", "LAGGING": "#FF3B30", "IMPROVING": "#0000FF"},
-            title="Sector Relative Strength & Momentum")
-        fig_rrg.add_hline(y=0, line_dash="dash", line_color="gray"); fig_rrg.add_vline(x=0, line_dash="dash", line_color="gray")
-        st.plotly_chart(fig_rrg, use_container_width=True)
+    st.subheader("🌎 Global Market Pulse")
+    tickers = ["^GSPC", "^IXIC", "BTC-USD", "EURUSD=X"]
+    data = get_ticker_data_parallel(tickers)
+    cols = st.columns(4)
+    if data:
+        for i, d in enumerate(data):
+            c_val = "#00C805" if d['change'] >= 0 else "#FF3B30"
+            with cols[i]: render_metric_card(d['symbol'], f"{d['price']:,.2f}", f"{d['change']:+.2f}%", c_val)
+            
+    st.divider()
+    c1, c2 = st.columns(2)
+    with c1: st.markdown("**🇺🇸 Wall Street Wire**"); render_news(fetch_feed_parallel([get_google_rss("Wall Street Market Analysis"), get_google_rss("Tech Stocks US")]))
+    with c2: st.markdown("**🔋 EV & Green Energy**"); render_news(fetch_feed_parallel([get_google_rss("Global EV Market News"), get_google_rss("Tesla News")]))
 
-# --- TAB 4: RISK COMMANDER ---
+# --- TAB 4: RISK COMMANDER (Advanced) ---
 with tabs[3]:
     st.subheader("🛡️ Defense Intelligence (VaR & Hedging)")
+    # Using India Holdings for Risk Demo
     risk_intel = get_refined_risk_intelligence(st.session_state.trading['india']['holdings'])
     
     if risk_intel:
@@ -347,41 +306,27 @@ with tabs[3]:
             with h2: st.info(f"📉 **Puts:** Buy {max(1, round(risk_intel['total_val']/25000))} Nifty Lots")
         else: st.success("✅ **Status:** Portfolio structure is stable.")
         
-        st.markdown("### 🧬 Correlation Matrix"); st.caption("Values > 0.80 mean stocks move identically (Bad).")
-        st.plotly_chart(px.imshow(risk_intel['corr'], text_auto=".2f", color_continuous_scale='RdBu_r', range_color=[-1, 1]), use_container_width=True)
+        st.markdown("### 🧬 Correlation Matrix"); st.plotly_chart(px.imshow(risk_intel['corr'], text_auto=".2f", color_continuous_scale='RdBu_r', range_color=[-1, 1]), use_container_width=True)
     else: st.info("⚠️ Add stocks to 'Trading Floor' to enable Risk Intelligence.")
 
-# --- TAB 5: INDIA PULSE ---
+# --- TAB 5: TRADING FLOOR (Global Restored) ---
 with tabs[4]:
-    st.subheader("🇮🇳 Market Pulse")
-    tickers = ["^NSEI", "^BSESN", "^NSEBANK", "GC=F"] 
-    data = get_ticker_data_parallel(tickers)
-    cols = st.columns(4)
-    if data:
-        for i, d in enumerate(data):
-            c_val = "#00C805" if d['change'] >= 0 else "#FF3B30"
-            with cols[i]: render_metric_card(d['symbol'], f"{d['price']:,.0f}", f"{d['change']:+.2f}%", c_val)
-
-# --- TAB 6: GLOBAL PULSE ---
-with tabs[5]:
-    st.subheader("🌍 Global Pulse")
-    tickers = ["^GSPC", "^IXIC", "BTC-USD", "EURUSD=X"]
-    data = get_ticker_data_parallel(tickers)
-    cols = st.columns(4)
-    if data:
-        for i, d in enumerate(data):
-            c_val = "#00C805" if d['change'] >= 0 else "#FF3B30"
-            with cols[i]: render_metric_card(d['symbol'], f"{d['price']:,.2f}", f"{d['change']:+.2f}%", c_val)
-
-# --- TAB 7: TRADING FLOOR ---
-with tabs[6]:
     st.subheader("📈 Virtual Exchange")
-    port = st.session_state.trading['india']
+    
+    # 1. Market Selection (Restored)
+    mkt = st.radio("Select Market Access:", ["🇮🇳 India (NSE)", "🇺🇸 Global (US)"], horizontal=True)
+    m_key = "india" if "India" in mkt else "global"
+    curr = "₹" if "India" in mkt else "$"
+    
+    port = st.session_state.trading[m_key]
+    
     c1, c2 = st.columns([1,2])
     with c1:
-        st.metric("Cash", f"₹{port['cash']:,.0f}")
-        ticker = st.text_input("Ticker", "RELIANCE.NS").upper()
-        if st.button("BUY"):
+        st.metric(f"Cash Available ({curr})", f"{curr}{port['cash']:,.0f}")
+        t_default = "RELIANCE.NS" if m_key == "india" else "NVDA"
+        ticker = st.text_input("Ticker Symbol", t_default).upper()
+        
+        if st.button("BUY ORDER"):
             d = yf.Ticker(ticker).history(period="1d")
             if not d.empty:
                 price = d['Close'].iloc[-1]; cost = price * 10
@@ -389,57 +334,35 @@ with tabs[6]:
                     port['cash'] -= cost
                     if ticker in port['holdings']: port['holdings'][ticker]['qty'] += 10
                     else: port['holdings'][ticker] = {'qty': 10, 'avg': price}
-                    save_json(TRADING_FILE, st.session_state.trading); st.success(f"Bought 10 {ticker}"); st.rerun()
-                else: st.error("No Funds")
+                    save_json(TRADING_FILE, st.session_state.trading); st.success(f"Executed: 10 {ticker} @ {price:.2f}"); st.rerun()
+                else: st.error("Insufficient Funds")
+            else: st.error("Invalid Ticker")
+            
     with c2:
+        st.write(f"### Your {mkt} Portfolio")
         if port['holdings']: st.dataframe(pd.DataFrame(port['holdings']).T)
+        else: st.info("No active positions.")
 
-# --- TAB 8: ANALYST LAB (FORENSICS & VALUATION) ---
-with tabs[7]:
+# --- TAB 6: ANALYST LAB (Forensics) ---
+with tabs[5]:
     st.subheader("🧠 Analyst Lab: Forensic Research")
     t_input = st.text_input("Deep Analyze Ticker", "RELIANCE.NS", key="forensic_tick")
     
     if st.button("Run Forensic Scan"):
-        st.caption("Crunching Cash Flows & Balance Sheets...")
         f_data = get_forensic_analysis(t_input)
-        
         if f_data:
             c1, c2, c3 = st.columns(3)
-            # 1. Earnings Quality (Forensic Check)
             q_col = "#00C805" if f_data['quality_ratio'] > 1.0 else "#FF3B30"
-            with c1:
-                render_metric_card("Earnings Quality", f"{f_data['quality_ratio']:.2f}x", "Goal: >1.0 (Cash > Profit)", q_col)
-            
-            # 2. Free Cash Flow (Valuation Driver)
+            with c1: render_metric_card("Earnings Quality", f"{f_data['quality_ratio']:.2f}x", "Goal: >1.0 (Cash > Profit)", q_col)
             fcf_cr = f_data['fcf'] / 10000000 if f_data['fcf'] else 0
-            with c2:
-                render_metric_card("Free Cash Flow", f"₹{fcf_cr:,.0f} Cr", "Actual Cash Available", "#00C805")
-                
-            # 3. PEG Ratio (Growth Valuation)
+            with c2: render_metric_card("Free Cash Flow", f"₹{fcf_cr:,.0f} Cr", "Actual Cash", "#00C805")
             peg_col = "#00C805" if 0 < f_data['peg'] < 1.5 else "#FF3B30"
-            with c3:
-                render_metric_card("PEG Ratio", f"{f_data['peg']:.2f}", "Undervalued if < 1.0", peg_col)
+            with c3: render_metric_card("PEG Ratio", f"{f_data['peg']:.2f}", "Valuation Check", peg_col)
             
             st.divider()
-            
-            # COMPETITIVE WAR ROOM
-            st.subheader("⚔️ Competitive War Room (Peer Comparison)")
-            st.caption("Relative Valuation Matrix")
-            
-            peer_stats = {
-                "Metric": ["P/E Ratio", "Return on Equity (ROE %)", "Debt to Equity"],
-                f"{t_input}": [f"{f_data['pe']:.2f}", f"{f_data['roe']:.2f}%", f"{f_data['debt_eq']:.2f}"],
-                "Sector Benchmark": ["25.0", "15.0%", "50.0"] # Simplified benchmark
-            }
+            st.subheader("⚔️ Competitive War Room")
+            peer_stats = {"Metric": ["P/E Ratio", "ROE %", "Debt to Equity"], f"{t_input}": [f"{f_data['pe']:.2f}", f"{f_data['roe']:.2f}%", f"{f_data['peg']:.2f}"]} # Using PEG as placeholder for D/E
             st.table(pd.DataFrame(peer_stats))
             
-            # MANAGEMENT AUDIT
-            st.divider()
-            st.subheader("🏛️ Management Audit")
-            if f_data['quality_ratio'] < 0.8:
-                st.error("⚠️ **RED FLAG:** Company is reporting profits but generating weak cash flow. Possible aggressive accounting.")
-            elif f_data['debt_eq'] > 100:
-                st.warning("⚠️ **Leverage Alert:** Debt is higher than Equity. Check interest coverage.")
-            else:
-                st.success("✅ **Clean Chit:** Financials look robust. Strong cash conversion and manageable debt.")
-        else: st.error("Could not fetch deep financial data. Ticker might be incorrect or data unavailable.")
+            if f_data['quality_ratio'] < 0.8: st.error("⚠️ **RED FLAG:** Weak Cash Flow Quality.")
+            else: st.success("✅ **Clean Chit:** Strong Cash Conversion.")
